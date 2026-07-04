@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>工参导入 - 网优百宝箱</title>
+<link rel="icon" href="data:,">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%;
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+    color: #e0e0e0;
+    background: #1e1e1e;
+    overflow: hidden;
+  }
+
+  /* 顶部导航栏 */
+  #top-nav {
+    position: fixed; top: 0; left: 0; right: 0; height: 44px;
+    background: #1a1a1a; border-bottom: 1px solid #3a3a3a;
+    display: flex; align-items: center; padding: 0 16px;
+    z-index: 2000;
+  }
+  #top-nav .back-btn {
+    color: #aaa; font-size: 12px; cursor: pointer;
+    display: flex; align-items: center; gap: 4px;
+    padding: 6px 12px; border: 1px solid #3a3a3a; border-radius: 4px;
+    background: #2a2a2a;
+  }
+  #top-nav .back-btn:hover { color: #fff; background: #333; }
+  #top-nav .page-title {
+    flex: 1; text-align: center; color: #e0e0e0; font-size: 14px; font-weight: 600;
+  }
+  #top-nav .placeholder { width: 80px; }
+
+  /* 主布局 */
+  #app {
+    display: flex;
+    height: 100vh;
+    padding-top: 44px;
+  }
+
+  /* 左侧面板 */
+  #sidebar {
+    width: 320px; min-width: 300px;
+    background: #2a2a2a;
+    border-right: 1px solid #3a3a3a;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  #sidebar-header {
+    padding: 14px 16px;
+    background: #1a1a1a;
+    border-bottom: 1px solid #3a3a3a;
+  }
+  #sidebar-header h2 {
+    font-size: 14px; color: #e0e0e0; font-weight: 600;
+  }
+  #sidebar-header p {
+    font-size: 11px; color: #888; margin-top: 4px;
+  }
+  #sidebar-body {
+    flex: 1; overflow-y: auto; padding: 12px;
+  }
+  #sidebar-body::-webkit-scrollbar { width: 6px; }
+  #sidebar-body::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+
+  .section {
+    background: #333;
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    padding: 12px;
+    margin-bottom: 12px;
+  }
+  .section-title {
+    font-size: 11px; font-weight: 600;
+    color: #aaa; text-transform: uppercase; letter-spacing: 0.5px;
+    margin-bottom: 10px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .section-title::before {
+    content: ""; display: inline-block;
+    width: 3px; height: 12px;
+    background: #67c23a;
+  }
+
+  .form-row {
+    display: flex; gap: 6px; align-items: center;
+    margin-bottom: 8px;
+  }
+  .form-row label {
+    font-size: 12px; color: #ccc; min-width: 60px;
+  }
+  .form-row input, .form-row select {
+    flex: 1; height: 28px; padding: 0 8px;
+    border: 1px solid #555; border-radius: 4px;
+    font-size: 12px; background: #1e1e1e; color: #e0e0e0;
+    outline: none;
+  }
+  .form-row input:focus, .form-row select:focus {
+    border-color: #67c23a;
+  }
+
+  button.btn {
+    height: 32px; padding: 0 14px;
+    border: 1px solid #555; border-radius: 4px;
+    font-size: 12px; background: #1e1e1e; color: #e0e0e0;
+    cursor: pointer; white-space: nowrap;
+    transition: all 0.2s;
+  }
+  button.btn:hover { background: #444; border-color: #777; }
+  button.btn-primary {
+    background: #67c23a; border-color: #67c23a; color: #fff;
+  }
+  button.btn-primary:hover { background: #85ce61; }
+  button.btn-success {
+    background: #67c23a; border-color: #67c23a; color: #fff;
+  }
+  button.btn-success:hover { background: #85ce61; }
+  button.btn-warning {
+    background: #e6a23c; border-color: #e6a23c; color: #fff;
+  }
+  button.btn-warning:hover { background: #ebb563; }
+  button.btn-danger {
+    background: #f56c6c; border-color: #f56c6c; color: #fff;
+  }
+  button.btn-danger:hover { background: #f78989; }
+  button.btn-small {
+    height: 26px; padding: 0 10px; font-size: 11px;
+  }
+  button.btn-loading {
+    opacity: 0.6; cursor: wait; position: relative;
+  }
+  button.btn-loading::after {
+    content: ""; position: absolute; right: 8px; top: 50%;
+    width: 10px; height: 10px; margin-top: -5px;
+    border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff;
+    border-radius: 50%; animation: btn-spin 0.8s linear infinite;
+  }
+  @keyframes btn-spin { to { transform: rotate(360deg); } }
+
+  .btn-group {
+    display: flex; gap: 6px; flex-wrap: wrap;
+  }
+  .btn-group .btn { flex: 1; min-width: 80px; }
+
+  /* 文件拖放区 */
+  .file-drop-zone {
+    border: 2px dashed #444;
+    border-radius: 6px;
+    padding: 24px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    background: #1e1e1e;
+  }
+  .file-drop-zone:hover, .file-drop-zone.drag-over {
+    border-color: #67c23a;
+    background: rgba(103, 194, 58, 0.1);
+  }
+  .file-drop-zone .icon {
+    font-size: 32px; margin-bottom: 8px;
+  }
+  .file-drop-zone .text {
+    font-size: 12px; color: #aaa;
+  }
+  .file-drop-zone .hint {
+    font-size: 11px; color: #666; margin-top: 4px;
+  }
+  .file-info {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 10px;
+    background: #1e1e1e;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    margin-top: 8px;
+    font-size: 12px;
+  }
+  .file-info .name {
+    color: #e0e0e0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    flex: 1;
+  }
+  .file-info .remove {
+    color: #f56c6c; cursor: pointer; margin-left: 8px;
+  }
+
+  /* 统计卡片 */
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+  .stat-card {
+    background: #1e1e1e;
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    padding: 10px;
+    text-align: center;
+  }
+  .stat-card .number {
+    font-size: 20px;
+    font-weight: 700;
+    color: #67c23a;
+    margin-bottom: 2px;
+  }
+  .stat-card .label {
+    font-size: 11px;
+    color: #888;
+  }
+  .stat-card.lte .number { color: #4fc3f7; }
+  .stat-card.nr .number { color: #a78bfa; }
+  .stat-card.conflict .number { color: #f56c6c; }
+
+  /* 右侧主内容区 */
+  #main-content {
+    flex: 1;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* 标签页 */
+  .tabs {
+    display: flex;
+    background: #1a1a1a;
+    border-bottom: 1px solid #3a3a3a;
+    padding: 0 12px;
+  }
+  .tab {
+    padding: 10px 16px;
+    font-size: 12px;
+    color: #888;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all 0.2s;
+  }
+  .tab:hover { color: #ccc; }
+  .tab.active {
+    color: #67c23a;
+    border-bottom-color: #67c23a;
+  }
+  .tab .badge {
+    display: inline-block;
+    min-width: 18px; height: 18px;
+    padding: 0 5px;
+    margin-left: 6px;
+    border-radius: 9px;
+    background: #3a3a3a;
+    color: #aaa;
+    font-size: 10px;
+    text-align: center;
+    line-height: 18px;
+  }
+  .tab.active .badge {
+    background: #67c23a;
+    color: #fff;
+  }
+
+  /* 内容区域 */
+  .tab-content {
+    flex: 1;
+    overflow: auto;
+    padding: 16px;
+    display: none;
+  }
+  .tab-content.active { display: block; }
+  .tab-content::-webkit-scrollbar { width: 8px; height: 8px; }
+  .tab-content::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
+
+  /* 数据表 */
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #2a2a2a;
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .data-table th {
+    background: #1a1a1a;
+    padding: 10px 12px;
+    text-align: left;
+    font-size: 11px;
+    color: #aaa;
+    font-weight: 600;
+    border-bottom: 1px solid #3a3a3a;
+    white-space: nowrap;
+    position: sticky;
+    top: 0;
+  }
+  .data-table td {
+    padding: 8px 12px;
+    font-size: 12px;
+    color: #ccc;
+    border-bottom: 1px solid #3a3a3a;
+    white-space: nowrap;
+  }
+  .data-table tr:last-child td { border-bottom: none; }
+  .data-table tr:hover td { background: #333; }
+
+  /* 分页 */
+  .pagination {
+    display: flex; align-items: center; justify-content: center;
+    gap: 6px; padding: 12px 0;
+  }
+  .pagination button {
+    min-width: 28px; height: 28px;
+    border: 1px solid #444; border-radius: 4px;
+    background: #2a2a2a; color: #ccc;
+    font-size: 11px; cursor: pointer;
+  }
+  .pagination button:hover:not(:disabled) {
+    border-color: #67c23a; color: #67c23a;
+  }
+  .pagination button.active {
+    background: #67c23a; border-color: #67c23a; color: #fff;
+  }
+  .pagination button:disabled {
+    opacity: 0.4; cursor: not-allowed;
+  }
+  .pagination .page-info {
+    font-size: 11px; color: #888; margin: 0 8px;
+  }
+
+  /* 搜索栏 */
+  .search-bar {
+    display: flex; gap: 8px; margin-bottom: 12px;
+  }
+  .search-bar input {
+    flex: 1; height: 30px;
+    padding: 0 10px;
+    border: 1px solid #444; border-radius: 4px;
+    background: #1e1e1e; color: #e0e0e0;
+    font-size: 12px; outline: none;
+  }
+  .search-bar input:focus { border-color: #67c23a; }
+  .search-bar select {
+    height: 30px;
+    padding: 0 10px;
+    border: 1px solid #444; border-radius: 4px;
+    background: #1e1e1e; color: #e0e0e0;
+    font-size: 12px; outline: none;
+  }
+  .search-bar select:focus { border-color: #67c23a; }
+
+  /* 网管同步标记 */
+  .sync-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1.4;
+    white-space: nowrap;
+  }
+  .sync-badge.synced {
+    background: rgba(76, 175, 80, 0.18);
+    color: #67c23a;
+    border: 1px solid rgba(76, 175, 80, 0.4);
+  }
+  .sync-badge.synced::before {
+    content: "✓";
+    font-size: 11px;
+  }
+  .sync-badge.unsynced {
+    background: rgba(158, 158, 158, 0.15);
+    color: #888;
+    border: 1px solid rgba(158, 158, 158, 0.3);
+  }
+  .sync-badge.unsynced::before {
+    content: "—";
+    color: #666;
+  }
+  tr.synced-row td {
+    background: rgba(76, 175, 80, 0.04);
+  }
+  tr.synced-row:hover td {
+    background: rgba(76, 175, 80, 0.08) !important;
+  }
+  .sync-stat-card .number { color: #67c23a !important; }
+  .sync-stat-card.unsynced .number { color: #ff9800 !important; }
+  /* 网管同步字段样式 (绿色加粗, 用于 pci/tac/earfcn) */
+  td .field-synced {
+    color: #67c23a;
+    font-weight: 600;
+  }
+
+  /* 导入结果 */
+  .result-panel {
+    background: #1e1e1e;
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    padding: 12px;
+    margin-top: 10px;
+  }
+  .result-item {
+    display: flex; align-items: center;
+    padding: 4px 0;
+    font-size: 12px;
+  }
+  .result-item .label { color: #888; min-width: 80px; }
+  .result-item .value { color: #e0e0e0; }
+  .result-item.success .value { color: #67c23a; }
+  .result-item.error .value { color: #f56c6c; }
+  .result-item.warn .value { color: #e6a23c; }
+
+  /* 日志面板 */
+  .log-panel {
+    background: #1a1a1a;
+    border-top: 1px solid #3a3a3a;
+    max-height: 140px;
+    overflow-y: auto;
+    padding: 8px 12px;
+    font-size: 11px;
+    font-family: 'SF Mono', Consolas, monospace;
+  }
+  .log-panel::-webkit-scrollbar { width: 6px; }
+  .log-panel::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+  .log-line { color: #aaa; padding: 2px 0; word-break: break-all; }
+  .log-line.info { color: #aaa; }
+  .log-line.warn { color: #e6a23c; }
+  .log-line.error { color: #f56c6c; }
+  .log-line.success { color: #67c23a; }
+
+  /* 空状态 */
+  .empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: #666;
+  }
+  .empty-state .icon {
+    font-size: 48px;
+    margin-bottom: 12px;
+    opacity: 0.5;
+  }
+  .empty-state .text {
+    font-size: 13px;
+  }
+
+  /* 模态框 */
+  .modal-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 9999;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .modal {
+    background: #2a2a2a;
+    border: 1px solid #3a3a3a;
+    border-radius: 8px;
+    padding: 20px;
+    min-width: 400px;
+    max-width: 90vw;
+    max-height: 80vh;
+    overflow: auto;
+  }
+  .modal h3 {
+    color: #e0e0e0;
+    margin-bottom: 16px;
+    font-size: 15px;
+  }
+  .modal .close-btn {
+    float: right;
+    cursor: pointer;
+    color: #888;
+    font-size: 20px;
+    line-height: 1;
+  }
+  .modal .close-btn:hover { color: #fff; }
+
+  /* 复选框样式 */
+  .checkbox-row {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; color: #ccc;
+  }
+  .checkbox-row input[type="checkbox"] {
+    accent-color: #67c23a;
+  }
+</style>
+</head>
+<body>
+
+<!-- 顶部导航栏 -->
+<div id="top-nav">
+  <div class="back-btn" onclick="window.location.href='/'">
+    <span>←</span> 返回首页
+  </div>
+  <div class="page-title">工参导入</div>
+  <div class="placeholder"></div>
+</div>
+
+<div id="app">
+  <!-- 左侧操作面板 -->
+  <div id="sidebar">
+    <div id="sidebar-header">
+      <h2>工参导入</h2>
+      <p>4G/5G 工参数据管理</p>
+    </div>
+    <div id="sidebar-body">
+
+      <!-- 数据统计 -->
+      <div class="section">
+        <div class="section-title">数据统计</div>
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="number" id="stat-total">0</div>
+            <div class="label">总小区数</div>
+          </div>
+          <div class="stat-card lte">
+            <div class="number" id="stat-lte">0</div>
+            <div class="label">4G LTE</div>
+          </div>
+          <div class="stat-card nr">
+            <div class="number" id="stat-nr">0</div>
+            <div class="label">5G NR</div>
+          </div>
+          <div class="stat-card conflict">
+            <div class="number" id="stat-conflict">0</div>
+            <div class="label">冲突数</div>
+          </div>
+          <div class="stat-card sync-stat-card" id="stat-synced-card" title="PCI/TAC/频点等已被网管同步更新过的小区数">
+            <div class="number" id="stat-synced">0</div>
+            <div class="label">网管已同步</div>
+          </div>
+          <div class="stat-card sync-stat-card unsynced" id="stat-unsynced-card" title="尚未被网管同步的小区数">
+            <div class="number" id="stat-unsynced">0</div>
+            <div class="label">未同步</div>
+          </div>
+        </div>
+        <div class="btn-group" style="margin-top: 10px;">
+          <button class="btn btn-small" id="btn-refresh-stats">刷新</button>
+          <button class="btn btn-small btn-danger" id="btn-clear-db">清空数据库</button>
+        </div>
+      </div>
+
+      <!-- 数据导入 -->
+      <div class="section">
+        <div class="section-title">1. 数据导入</div>
+        <input type="file" id="file-input" accept=".xlsx,.xls,.csv" style="display:none;" />
+        <div class="file-drop-zone" id="drop-zone">
+          <div class="icon">📁</div>
+          <div class="text">点击或拖拽上传工参文件</div>
+          <div class="hint">支持 .xlsx / .xls / .csv 格式</div>
+        </div>
+        <div id="file-info" style="display:none;">
+          <div class="file-info">
+            <span class="name" id="file-name"></span>
+            <span class="remove" id="file-remove">✕</span>
+          </div>
+        </div>
+
+        <div class="checkbox-row" style="margin-top: 10px;">
+          <input type="checkbox" id="append-mode" />
+          <label for="append-mode">追加模式（4G/5G 分次上传合并）</label>
+        </div>
+
+        <div class="btn-group" style="margin-top: 10px;">
+          <button class="btn btn-primary" id="btn-upload" style="flex: 2;">开始导入</button>
+          <button class="btn btn-small btn-warning" id="btn-sample">示例数据</button>
+        </div>
+
+        <div id="import-result" style="display:none;">
+          <div class="result-panel" id="result-panel"></div>
+        </div>
+      </div>
+
+      <!-- 模板下载 -->
+      <div class="section">
+        <div class="section-title">2. 模板下载</div>
+        <div class="btn-group">
+          <button class="btn btn-small" id="btn-template-4g">4G模板</button>
+          <button class="btn btn-small" id="btn-template-5g">5G模板</button>
+          <button class="btn btn-small" id="btn-template-both">双制式</button>
+        </div>
+      </div>
+
+      <!-- 导出 -->
+      <div class="section">
+        <div class="section-title">3. 数据导出</div>
+        <div class="btn-group">
+          <button class="btn btn-success" id="btn-export-workparams">工参表</button>
+          <button class="btn btn-success" id="btn-export-neighbors">邻区清单</button>
+        </div>
+        <div class="btn-group" style="margin-top: 6px;">
+          <button class="btn btn-success" id="btn-export-conflicts">冲突报表</button>
+          <button class="btn btn-success" id="btn-export-summary">规划总览</button>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="log-panel" id="log-panel"></div>
+  </div>
+
+  <!-- 右侧内容区 -->
+  <div id="main-content">
+    <div class="tabs">
+      <div class="tab active" data-tab="cells">
+        小区列表
+        <span class="badge" id="cells-count">0</span>
+      </div>
+      <div class="tab" data-tab="history">
+        导入历史
+        <span class="badge" id="history-count">0</span>
+      </div>
+    </div>
+
+    <!-- 小区列表 -->
+    <div class="tab-content active" id="tab-cells">
+      <div class="search-bar">
+        <select id="filter-rat">
+          <option value="">全部制式</option>
+          <option value="LTE">4G LTE</option>
+          <option value="NR">5G NR</option>
+        </select>
+        <select id="filter-sync" title="网管同步状态">
+          <option value="">同步状态: 全部</option>
+          <option value="synced">✓ 已同步</option>
+          <option value="unsynced">— 未同步</option>
+        </select>
+        <input type="text" id="cells-search" placeholder="搜索小区名/ECGI/站点..." />
+        <button class="btn btn-small" id="btn-refresh-cells">刷新</button>
+      </div>
+      <div id="cells-table-container">
+        <div class="empty-state">
+          <div class="icon">📡</div>
+          <div class="text">暂无工参数据，请先导入</div>
+        </div>
+      </div>
+      <div class="pagination" id="cells-pagination"></div>
+    </div>
+
+    <!-- 导入历史 -->
+    <div class="tab-content" id="tab-history">
+      <div class="search-bar">
+        <button class="btn btn-small" id="btn-refresh-history">刷新历史</button>
+      </div>
+      <div id="history-list">
+        <div class="empty-state">
+          <div class="icon">📜</div>
+          <div class="text">暂无导入历史</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/api.js"></script>
+<script src="/static/js/workparams.js"></script>
+</body>
+</html>

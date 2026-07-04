@@ -1,0 +1,22 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+*.log
+logs/
+temp/
+data/
+网管文件/
+
+# 本地大工参/网管样例（如需纳入版本库可删除此行）
+工参/*.xlsx
+工参/*.xls
+工参/*.csv
+
+# PyInstaller
+build/
+dist/
+*.spec.bak
