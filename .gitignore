@@ -23,13 +23,16 @@ wheels/
 # PyInstaller
 *.manifest
 *.spec
+*.spec.bak
 /dist/
 /build/
 
 # Virtual environments
 venv/
+.venv/
 ENV/
 env/
+.env
 
 # IDE
 .vscode/
@@ -42,9 +45,24 @@ env/
 Thumbs.db
 
 # Logs
+*.log
+logs/
 logs/*.log
 logs/*.out
 
 # Temp
 temp/
 *.tmp
+
+# 项目数据与网管文件
+data/
+网管文件/
+
+# 本地大工参/网管样例（如需纳入版本库可删除此行）
+工参/*.xlsx
+工参/*.xls
+工参/*.csv
+
+# License
+.license_key
+license.lic
