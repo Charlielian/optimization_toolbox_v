@@ -25,10 +25,10 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Build EXE with PyInstaller
+      - name: Build EXE with PyInstaller (onedir)
         run: |
           pyinstaller `
-            --onefile `
+            --onedir `
             --name "网优百宝箱" `
             --add-data "frontend;frontend" `
             --add-data "static;static" `
@@ -39,8 +39,8 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: 网优百宝箱-windows-exe
-          path: dist/网优百宝箱.exe
+          name: 网优百宝箱-windows
+          path: dist/网优百宝箱/
 
   release:
     needs: build
@@ -52,15 +52,18 @@ jobs:
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: 网优百宝箱-windows-exe
-          path: ./dist
+          name: 网优百宝箱-windows
+          path: ./网优百宝箱
+
+      - name: Zip release package
+        run: zip -r 网优百宝箱.zip 网优百宝箱
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
           name: Release v${{ github.run_number }}
-          files: ./dist/网优百宝箱.exe
+          files: 网优百宝箱.zip
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
