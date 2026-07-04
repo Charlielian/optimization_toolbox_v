@@ -1,0 +1,1579 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>小区规划（PCI+邻区） - 网优百宝箱</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%230f1117'/%3E%3Ctext x='50' y='65' font-size='50' text-anchor='middle' fill='%234dabf7' font-family='sans-serif' font-weight='bold'%3E4%2F5%3C/text%3E%3C/svg%3E"/>
+<link rel="stylesheet" href="/static/vendor/leaflet.css"/>
+<style>
+  :root {
+    --bg-primary: #0f1117;
+    --bg-secondary: #1a1d27;
+    --bg-tertiary: #242836;
+    --bg-elevated: #2c3040;
+    --border-color: rgba(255,255,255,0.06);
+    --border-light: rgba(255,255,255,0.04);
+    --border-hover: rgba(255,255,255,0.12);
+    --text-primary: #e8eaed;
+    --text-secondary: #9aa0b0;
+    --text-tertiary: #5f6577;
+    --accent-blue: #4dabf7;
+    --accent-green: #51cf66;
+    --accent-orange: #ffa94d;
+    --accent-red: #ff6b6b;
+    --accent-purple: #9775fa;
+    --glow-blue: rgba(77,171,247,0.15);
+    --glow-green: rgba(81,207,102,0.15);
+    --glow-orange: rgba(255,169,77,0.15);
+    --glow-red: rgba(255,107,107,0.15);
+    --glow-purple: rgba(151,117,250,0.15);
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.3);
+    --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
+    --shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 13px; color: var(--text-primary); background: var(--bg-primary); }
+  #app { display: flex; flex-direction: column; height: 100vh; }
+
+  /* ===== 顶部导航栏 ===== */
+  #top-nav {
+    height: 48px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid transparent;
+    border-image: linear-gradient(90deg, transparent 0%, var(--accent-blue) 30%, var(--accent-purple) 70%, transparent 100%) 1;
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    z-index: 2000;
+    box-shadow: 0 1px 8px rgba(0,0,0,0.4);
+    position: relative;
+  }
+  #top-nav::after {
+    content: "";
+    position: absolute;
+    bottom: -1px;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent 0%, var(--accent-blue) 30%, var(--accent-purple) 70%, transparent 100%);
+    opacity: 0.4;
+  }
+  #top-nav .back-btn {
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 14px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+    transition: all 0.2s ease;
+    text-decoration: none;
+  }
+  #top-nav .back-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-elevated);
+    border-color: var(--border-hover);
+  }
+  #top-nav .page-title {
+    flex: 1;
+    text-align: center;
+    color: var(--text-primary);
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-shadow: 0 0 20px var(--glow-blue);
+  }
+  #top-nav .placeholder { width: 100px; }
+  #top-nav .nav-actions { display: flex; gap: 8px; }
+  #top-nav .nav-btn {
+    padding: 5px 14px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-family: inherit;
+  }
+  #top-nav .nav-btn:hover { color: var(--text-primary); background: var(--bg-elevated); border-color: var(--border-hover); }
+
+  /* ===== 主内容区 ===== */
+  #main-content {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+    padding: 12px;
+    gap: 12px;
+  }
+
+  /* ===== 左侧控制面板 ===== */
+  #sidebar { display: none; }
+  #sidebar-header {
+    padding: 14px 18px;
+    background: linear-gradient(180deg, rgba(77,171,247,0.06) 0%, transparent 100%);
+    border-bottom: 1px solid var(--border-color);
+  }
+  #sidebar-header h1 {
+    font-size: 15px;
+    color: var(--text-primary);
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-shadow: 0 0 16px var(--glow-blue);
+  }
+  #sidebar-header p { font-size: 11px; color: var(--text-tertiary); margin-top: 3px; }
+  #sidebar-body { flex: 1; overflow-y: auto; padding: 12px; overflow-x: hidden; }
+  #sidebar-body::-webkit-scrollbar { width: 4px; }
+  #sidebar-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+  #sidebar-body::-webkit-scrollbar-track { background: transparent; }
+
+  /* ===== 独立卡片式功能模块 ===== */
+  .section {
+    background: rgba(36,40,54,0.7);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    margin-bottom: 10px;
+    overflow: hidden;
+    transition: box-shadow 0.3s ease, border-color 0.3s ease, transform 0.2s ease;
+    box-shadow: var(--shadow-sm), inset 0 1px 0 rgba(255,255,255,0.03);
+    position: relative;
+  }
+  .section::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 3px;
+    border-radius: 3px 0 0 3px;
+    background: var(--accent-blue);
+    opacity: 0.5;
+    transition: opacity 0.3s ease;
+  }
+  .section:hover {
+    box-shadow: var(--shadow-md), 0 0 20px rgba(77,171,247,0.06);
+    border-color: var(--border-hover);
+    transform: translateY(-1px);
+  }
+  .section:hover::before { opacity: 1; }
+  .section.collapsed {
+    opacity: 0.7;
+  }
+  .section.collapsed:hover {
+    opacity: 1;
+  }
+  .section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    cursor: pointer;
+    user-select: none;
+    background: rgba(255,255,255,0.015);
+    border-bottom: 1px solid var(--border-light);
+    transition: background 0.2s ease;
+  }
+  .section-header:hover { background: rgba(255,255,255,0.03); }
+  .section.collapsed .section-header { border-bottom: none; }
+  .section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: 0.3px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .section-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    flex-shrink: 0;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+  }
+  .section-chevron {
+    width: 16px;
+    height: 16px;
+    color: var(--text-tertiary);
+    transition: transform 0.3s cubic-bezier(0.4,0,0.2,1);
+    flex-shrink: 0;
+    opacity: 0.6;
+  }
+  .section-header:hover .section-chevron { opacity: 1; }
+  .section.collapsed .section-chevron { transform: rotate(-90deg); }
+
+  /* 各功能卡片左边框颜色 */
+  .section[data-accent="orange"]::before { background: var(--accent-orange); }
+  .section[data-accent="green"]::before { background: var(--accent-green); }
+  .section[data-accent="blue"]::before { background: var(--accent-blue); }
+  .section[data-accent="purple"]::before { background: var(--accent-purple); }
+  .section[data-accent="red"]::before { background: var(--accent-red); }
+  .section:hover[data-accent="orange"] { box-shadow: var(--shadow-md), 0 0 20px var(--glow-orange); }
+  .section:hover[data-accent="green"] { box-shadow: var(--shadow-md), 0 0 20px var(--glow-green); }
+  .section:hover[data-accent="blue"] { box-shadow: var(--shadow-md), 0 0 20px var(--glow-blue); }
+  .section:hover[data-accent="purple"] { box-shadow: var(--shadow-md), 0 0 20px var(--glow-purple); }
+  .section:hover[data-accent="red"] { box-shadow: var(--shadow-md), 0 0 20px var(--glow-red); }
+  .section-body {
+    padding: 14px 16px;
+    max-height: 2000px;
+    overflow: hidden;
+    transition: max-height 0.4s cubic-bezier(0.4,0,0.2,1), padding 0.3s ease, opacity 0.3s ease;
+    opacity: 1;
+  }
+  .section.collapsed .section-body {
+    max-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    opacity: 0;
+  }
+
+  /* ===== 表单样式 ===== */
+  .form-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .form-row label { font-size: 12px; color: var(--text-secondary); min-width: 70px; font-weight: 500; }
+  .form-row input, .form-row select {
+    flex: 1;
+    height: 30px;
+    padding: 0 10px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    outline: none;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    font-family: inherit;
+  }
+  .form-row input:focus, .form-row select:focus {
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 3px var(--glow-blue);
+    background: var(--bg-elevated);
+  }
+  .form-row input::placeholder { color: var(--text-tertiary); }
+
+  /* ===== 按钮样式 ===== */
+  button.btn {
+    height: 32px;
+    padding: 0 14px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.2s ease;
+    font-weight: 500;
+    font-family: inherit;
+    position: relative;
+    overflow: hidden;
+  }
+  button.btn:hover {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    border-color: var(--border-hover);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-sm);
+  }
+  button.btn:active { transform: translateY(0); }
+  button.btn-primary {
+    background: linear-gradient(135deg, #3a8fd4 0%, var(--accent-blue) 100%);
+    border-color: rgba(77,171,247,0.3);
+    color: #fff;
+    box-shadow: 0 2px 8px var(--glow-blue);
+  }
+  button.btn-primary:hover {
+    background: linear-gradient(135deg, #4da3ff 0%, #6dc0ff 100%);
+    box-shadow: 0 4px 16px var(--glow-blue);
+    transform: translateY(-1px);
+  }
+  button.btn-success {
+    background: linear-gradient(135deg, #3aad52 0%, var(--accent-green) 100%);
+    border-color: rgba(81,207,102,0.3);
+    color: #fff;
+    box-shadow: 0 2px 8px var(--glow-green);
+  }
+  button.btn-success:hover {
+    background: linear-gradient(135deg, #52d460 0%, #6ee07a 100%);
+    box-shadow: 0 4px 16px var(--glow-green);
+    transform: translateY(-1px);
+  }
+  button.btn-warning {
+    background: linear-gradient(135deg, #e08930 0%, var(--accent-orange) 100%);
+    border-color: rgba(255,169,77,0.3);
+    color: #fff;
+    box-shadow: 0 2px 8px var(--glow-orange);
+  }
+  button.btn-warning:hover {
+    background: linear-gradient(135deg, #f09a40 0%, #ffc060 100%);
+    box-shadow: 0 4px 16px var(--glow-orange);
+    transform: translateY(-1px);
+  }
+  button.btn-danger {
+    background: linear-gradient(135deg, #e05555 0%, var(--accent-red) 100%);
+    border-color: rgba(255,107,107,0.3);
+    color: #fff;
+    box-shadow: 0 2px 8px var(--glow-red);
+  }
+  button.btn-danger:hover {
+    background: linear-gradient(135deg, #ff7070 0%, #ff9090 100%);
+    box-shadow: 0 4px 16px var(--glow-red);
+    transform: translateY(-1px);
+  }
+  button.btn-small { height: 28px; padding: 0 10px; font-size: 11px; }
+
+  .btn-group { display: flex; gap: 6px; flex-wrap: wrap; }
+  .btn-group .btn { flex: 1; min-width: 80px; }
+  #radius-btns { flex-wrap: nowrap; }
+  #radius-btns .btn { flex: 1; min-width: unset; }
+  #radius-btns .btn.active { background: var(--accent-blue); border-color: var(--accent-blue); color: #fff; }
+
+  /* ===== 中间地图区域 ===== */
+  #map-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  #map-wrap {
+    flex: 1;
+    position: relative;
+    background: var(--bg-secondary);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border-color);
+    overflow: hidden;
+    box-shadow: var(--shadow-md), inset 0 0 60px rgba(0,0,0,0.3);
+  }
+  #map { width: 100%; height: 100%; }
+  .leaflet-container { background: #0d0f14; }
+
+  /* ===== 地图规划按钮条 ===== */
+  #map-plan-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  .map-plan-trigger {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    background: rgba(26,29,39,0.9);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    user-select: none;
+    transition: all 0.25s ease;
+    box-shadow: var(--shadow-sm);
+    font-family: inherit;
+  }
+  .map-plan-trigger:hover {
+    border-color: var(--border-hover);
+    box-shadow: var(--shadow-md), 0 0 16px rgba(77,171,247,0.08);
+    transform: translateY(-1px);
+  }
+  .map-plan-trigger.active {
+    border-color: rgba(255,169,77,0.4);
+    box-shadow: var(--shadow-md), 0 0 20px var(--glow-orange);
+  }
+  .map-plan-trigger-icon { font-size: 14px; }
+  .map-plan-trigger-label { font-size: 12px; font-weight: 600; color: var(--text-primary); letter-spacing: 0.3px; }
+  .map-plan-trigger-badge {
+    font-size: 9px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    background: var(--bg-tertiary);
+    color: var(--text-tertiary);
+    font-weight: 500;
+  }
+
+  /* ===== 浮动规划卡片（可拖动 + 可缩放） ===== */
+  .float-plan-card {
+    position: absolute;
+    z-index: 1200;
+    background: rgba(26,29,39,0.94);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5), 0 0 1px rgba(255,255,255,0.05);
+    display: flex;
+    flex-direction: column;
+    min-width: 280px;
+    min-height: 120px;
+    overflow: hidden;
+    opacity: 0;
+    transform: scale(0.95) translateY(8px);
+    pointer-events: none;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+  }
+  .float-plan-card.visible {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+    pointer-events: auto;
+  }
+  .float-plan-card-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    cursor: grab;
+    user-select: none;
+    background: rgba(255,255,255,0.02);
+    border-bottom: 1px solid var(--border-light);
+    flex-shrink: 0;
+  }
+  .float-plan-card-header:active { cursor: grabbing; }
+  .float-plan-card-header:hover { background: rgba(255,255,255,0.04); }
+  .float-card-icon { font-size: 14px; flex-shrink: 0; }
+  .float-card-title {
+    flex: 1;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: 0.3px;
+  }
+  .float-card-btn {
+    background: none;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    padding: 3px 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    transition: all 0.15s ease;
+    font-family: inherit;
+    line-height: 1;
+  }
+  .float-card-btn:hover { color: var(--text-primary); background: var(--bg-tertiary); border-color: var(--border-hover); }
+  .float-card-btn.close-btn:hover { color: var(--accent-red); border-color: rgba(255,107,107,0.3); background: rgba(255,107,107,0.08); }
+  .float-plan-card-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .float-plan-card-body::-webkit-scrollbar { width: 3px; }
+  .float-plan-card-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 2px; }
+  .float-plan-card-body::-webkit-scrollbar-track { background: transparent; }
+  .float-plan-fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 12px;
+  }
+  .float-plan-fields .form-row { margin-bottom: 0; }
+  .float-plan-fields .form-row[style*="flex-wrap"] { grid-column: 1 / -1; }
+  .float-plan-actions { display: flex; gap: 8px; flex-shrink: 0; padding-top: 4px; border-top: 1px solid var(--border-light); }
+
+  /* 右下角 resize 手柄 */
+  .float-card-resize {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 16px;
+    height: 16px;
+    cursor: nwse-resize;
+    z-index: 1;
+  }
+  .float-card-resize::after {
+    content: '';
+    position: absolute;
+    right: 4px;
+    bottom: 4px;
+    width: 6px;
+    height: 6px;
+    border-right: 2px solid var(--text-tertiary);
+    border-bottom: 2px solid var(--text-tertiary);
+    opacity: 0.4;
+    transition: opacity 0.2s;
+  }
+  .float-card-resize:hover::after { opacity: 0.8; }
+  .float-plan-card.dragging { transition: none; }
+  .float-plan-card.resizing { transition: none; }
+
+  /* ===== 底部统计面板 ===== */
+  #bottom-panel {
+    display: flex;
+    gap: 12px;
+    height: 120px;
+  }
+  .stat-card {
+    flex: 1;
+    background: var(--bg-secondary);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-color);
+    padding: 12px 16px;
+    box-shadow: var(--shadow-sm);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    position: relative;
+    overflow: hidden;
+  }
+  .stat-card::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, var(--accent-blue) 0%, rgba(77,171,247,0.2) 100%);
+    box-shadow: 0 0 12px var(--glow-blue);
+  }
+  .stat-card.green::before {
+    background: linear-gradient(90deg, var(--accent-green) 0%, rgba(81,207,102,0.2) 100%);
+    box-shadow: 0 0 12px var(--glow-green);
+  }
+  .stat-card.orange::before {
+    background: linear-gradient(90deg, var(--accent-orange) 0%, rgba(255,169,77,0.2) 100%);
+    box-shadow: 0 0 12px var(--glow-orange);
+  }
+  .stat-card.red::before {
+    background: linear-gradient(90deg, var(--accent-red) 0%, rgba(255,107,107,0.2) 100%);
+    box-shadow: 0 0 12px var(--glow-red);
+  }
+  .stat-card.purple::before {
+    background: linear-gradient(90deg, var(--accent-purple) 0%, rgba(151,117,250,0.2) 100%);
+    box-shadow: 0 0 12px var(--glow-purple);
+  }
+  .stat-label { font-size: 11px; color: var(--text-tertiary); font-weight: 500; }
+  .stat-value {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--text-primary);
+    font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+    letter-spacing: -0.5px;
+    text-shadow: 0 0 16px rgba(232,234,237,0.15);
+  }
+  .stat-sub { font-size: 11px; color: var(--accent-green); }
+  .stat-sub.warn { color: var(--accent-orange); }
+  .stat-sub.error { color: var(--accent-red); }
+
+  /* ===== 右侧详情面板 ===== */
+  #detail-panel {
+    width: 280px;
+    min-width: 260px;
+    background: rgba(26,29,39,0.85);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: var(--shadow-md), inset 0 1px 0 rgba(255,255,255,0.03);
+  }
+  #detail-header {
+    padding: 14px 16px;
+    background: linear-gradient(180deg, rgba(151,117,250,0.06) 0%, transparent 100%);
+    border-bottom: 1px solid var(--border-color);
+    font-size: 13px;
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+  #detail-body { flex: 1; overflow-y: auto; padding: 12px; }
+  #detail-body::-webkit-scrollbar { width: 4px; }
+  #detail-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+
+  .detail-log-section {
+    border-bottom: 1px solid var(--border-color);
+    flex-shrink: 0;
+  }
+
+  .info-card {
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-sm);
+    padding: 10px;
+    margin-bottom: 8px;
+    font-size: 12px;
+    border-left: 3px solid var(--accent-blue);
+  }
+  .info-card .row { display: flex; padding: 4px 0; border-bottom: 1px solid var(--border-light); }
+  .info-card .row:last-child { border-bottom: none; }
+  .info-card .key { color: var(--text-tertiary); min-width: 75px; font-size: 11px; }
+  .info-card .val { color: var(--text-primary); flex: 1; word-break: break-all; font-weight: 500; }
+
+  .neighbor-list { max-height: 200px; overflow-y: auto; }
+  .neighbor-item {
+    padding: 8px 10px;
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-sm);
+    margin-bottom: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    border: 1px solid transparent;
+  }
+  .neighbor-item:hover {
+    background: var(--bg-elevated);
+    border-color: var(--border-hover);
+  }
+  .neighbor-item .name { color: var(--text-primary); font-weight: 500; }
+  .neighbor-item .meta { color: var(--text-tertiary); font-size: 11px; margin-top: 2px; }
+  .neighbor-item .score { float: right; color: var(--accent-green); font-weight: 600; font-family: monospace; }
+
+  /* ===== 日志面板 ===== */
+  .log-panel {
+    background: var(--bg-primary);
+    border-top: 1px solid var(--border-color);
+  }
+  .log-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-light);
+  }
+  .log-panel-title { color: var(--text-tertiary); font-size: 11px; font-weight: 600; }
+  .log-panel-actions { display: flex; gap: 4px; }
+  .log-panel-actions button {
+    background: var(--bg-secondary);
+    color: var(--text-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    padding: 2px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.2s ease;
+  }
+  .log-panel-actions button:hover { background: var(--bg-elevated); color: var(--text-secondary); border-color: var(--border-hover); }
+  #log-panel {
+    max-height: 120px;
+    overflow-y: auto;
+    padding: 8px 12px;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', 'SF Mono', Consolas, 'Courier New', monospace;
+    line-height: 1.6;
+  }
+  #log-panel::-webkit-scrollbar { width: 4px; }
+  #log-panel::-webkit-scrollbar-thumb { background: rgba(81,207,102,0.2); border-radius: 2px; }
+  #log-panel::-webkit-scrollbar-thumb:hover { background: rgba(81,207,102,0.35); }
+  #log-panel::-webkit-scrollbar-track { background: transparent; }
+  #log-panel .log-line { color: var(--text-secondary); padding: 1px 0; word-break: break-all; }
+  #log-panel .log-line.info { color: var(--text-secondary); }
+  #log-panel .log-line.warn { color: var(--accent-orange); }
+  #log-panel .log-line.error { color: var(--accent-red); }
+  #log-panel .log-line.success { color: var(--accent-green); }
+  #log-panel .log-line.debug { color: var(--text-tertiary); font-style: italic; }
+
+  /* ===== Leaflet 控件样式 (暗色主题) ===== */
+  .leaflet-bar a {
+    background-color: var(--bg-secondary) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+    border-radius: var(--radius-sm) !important;
+  }
+  .leaflet-bar a:hover { background-color: var(--bg-elevated) !important; }
+  .leaflet-control-zoom a { color: var(--text-primary) !important; }
+
+  .leaflet-control-layers {
+    background: rgba(26,29,39,0.92) !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: var(--radius-md) !important;
+    color: var(--text-primary) !important;
+    box-shadow: var(--shadow-md) !important;
+    backdrop-filter: blur(8px);
+  }
+  .leaflet-control-layers-expanded { padding: 10px 12px !important; }
+  .leaflet-control-layers-toggle { background-color: var(--bg-secondary) !important; border-color: var(--border-color) !important; }
+  .leaflet-control-layers label { font-size: 12px; color: var(--text-secondary); }
+  .leaflet-control-layers-separator { border-top: 1px solid var(--border-light) !important; }
+
+  /* ===== Zoom 滑块 ===== */
+  .leaflet-zoom-slider-ctrl {
+    background: rgba(26,29,39,0.92);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: 8px 10px 6px;
+    user-select: none;
+    min-width: 110px;
+    box-shadow: var(--shadow-sm);
+    backdrop-filter: blur(8px);
+  }
+  .zslider-wrap { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .zslider-row { display: flex; align-items: center; gap: 4px; }
+  .zlabel { color: var(--text-secondary); font-size: 16px; font-weight: 600; line-height: 1; flex-shrink: 0; }
+  .zslider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 72px;
+    height: 4px;
+    background: var(--bg-tertiary);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+  }
+  .zslider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent-blue);
+    border: 2px solid var(--bg-secondary);
+    cursor: pointer;
+    box-shadow: 0 0 6px var(--glow-blue);
+  }
+  .zslider::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent-blue);
+    border: 2px solid var(--bg-secondary);
+    cursor: pointer;
+    box-shadow: 0 0 6px var(--glow-blue);
+  }
+  .zslider-val { color: var(--accent-blue); font-size: 11px; font-weight: 600; font-family: monospace; }
+
+  /* ===== 加载中按钮 ===== */
+  button.btn-loading { opacity: 0.6; cursor: wait; position: relative; }
+  button.btn-loading::after {
+    content: "";
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    width: 10px;
+    height: 10px;
+    margin-top: -5px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: btn-spin 0.8s linear infinite;
+  }
+  @keyframes btn-spin { to { transform: rotate(360deg); } }
+
+  /* ===== 规划站点中心标记 ===== */
+  .planned-site-center { pointer-events: none; }
+  .planned-site-pulse {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: rgba(255,169,77,0.5);
+    border: 2px solid var(--accent-orange);
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    margin-left: -6px;
+    margin-top: -6px;
+    animation: planned-pulse 1.6s ease-out infinite;
+    box-shadow: 0 0 8px var(--glow-orange);
+  }
+  .planned-site-label {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    transform: translate(-50%, -28px);
+    color: var(--accent-orange);
+    font-weight: 600;
+    font-size: 12px;
+    background: rgba(15,17,23,0.9);
+    padding: 2px 8px;
+    border-radius: 3px;
+    white-space: nowrap;
+    border: 1px solid rgba(255,169,77,0.3);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  }
+  @keyframes planned-pulse {
+    0% { transform: scale(0.8); opacity: 0.9; }
+    100% { transform: scale(1.6); opacity: 0; }
+  }
+
+  /* ===== PCI 标签 (4G/5G 地图上显示 PCI 数字, 按 mod3 着色) ===== */
+  /* .pci-label-wrap: Leaflet 容器, 我们让 div 中心对齐 marker 位置 (通过 translate(-50%,-50%)) */
+  .pci-label-wrap {
+    /* 让 Leaflet 不在容器层加额外偏移, 完全由内部 .pci-label 的 transform 控制 */
+    position: relative;
+    width: 0;
+    height: 0;
+  }
+  .pci-label {
+    pointer-events: none;
+    user-select: none;
+    font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    padding: 2px 5px;
+    border-radius: 3px;
+    background: rgba(15,17,23,0.78);
+    /* 关键: 让 div 中心对齐到 (lat,lon) 即基站/扇区中心点 */
+    position: absolute;
+    left: 0;
+    top: 0;
+    transform: translate(-50%, -50%);
+    border: 1px solid rgba(255,255,255,0.12);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.55);
+    white-space: nowrap;
+    text-align: center;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .pci-label.mod3-0 { color: #ff6b6b; border-color: rgba(255,107,107,0.5); }  /* 红 */
+  .pci-label.mod3-1 { color: #ffd43b; border-color: rgba(255,212,59,0.5); }  /* 黄 */
+  .pci-label.mod3-2 { color: #4dabf7; border-color: rgba(77,171,247,0.5); }  /* 蓝 */
+  .pci-label.planned {
+    background: rgba(26,29,39,0.92);
+    border-width: 1.5px;
+    box-shadow: 0 0 8px rgba(255,169,77,0.4), 0 1px 4px rgba(0,0,0,0.6);
+  }
+  .pci-label.planned.mod3-0 { color: #ff8e8e; border-color: #ff8e8e; }
+  .pci-label.planned.mod3-1 { color: #ffe066; border-color: #ffe066; }
+  .pci-label.planned.mod3-2 { color: #74c0fc; border-color: #74c0fc; }
+  .pci-label.unset { color: var(--text-tertiary); border-color: var(--border-color); }
+
+  /* ===== 邻区连线 tooltip ===== */
+  .nbr-tooltip {
+    background: rgba(15,17,23,0.92) !important;
+    border: 1px solid var(--border-color) !important;
+    box-shadow: var(--shadow-md) !important;
+    backdrop-filter: blur(8px);
+  }
+  .nbr-tooltip::before { border-top-color: var(--border-color) !important; }
+  .leaflet-tooltip.nbr-tooltip { color: var(--text-primary) !important; font-size: 12px !important; padding: 6px 8px !important; }
+
+  /* ===== 冲突小区脉动 ===== */
+  .conflict-pulse { animation: conflict-blink 1.6s ease-in-out infinite; }
+  @keyframes conflict-blink {
+    0%, 100% { opacity: 0.9; }
+    50% { opacity: 0.3; }
+  }
+
+  /* ===== 规划进度条 ===== */
+  .plan-progress {
+    position: absolute;
+    left: 50%;
+    bottom: 24px;
+    transform: translateX(-50%);
+    width: min(560px, calc(100% - 400px));
+    max-width: 90%;
+    background: rgba(26,29,39,0.92);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    padding: 12px 16px 14px;
+    z-index: 1100;
+    display: none;
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    transition: opacity 0.3s ease;
+  }
+  .plan-progress.visible { display: block; }
+  .plan-progress.fade-out { opacity: 0; }
+  .plan-progress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+    color: var(--text-primary);
+    font-size: 13px;
+  }
+  .plan-progress-title { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .plan-progress-title .spinner {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid rgba(77,171,247,0.2);
+    border-top-color: var(--accent-blue);
+    animation: btn-spin 0.8s linear infinite;
+    display: inline-block;
+  }
+  .plan-progress-percent { font-variant-numeric: tabular-nums; color: var(--accent-blue); font-weight: 700; }
+  .plan-progress-stage { color: var(--text-tertiary); font-size: 11px; margin-bottom: 6px; min-height: 14px; }
+  .plan-progress-bar {
+    width: 100%;
+    height: 6px;
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    overflow: hidden;
+    position: relative;
+  }
+  .plan-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #3a8fd4 0%, var(--accent-blue) 50%, #6dc0ff 100%);
+    border-radius: 3px;
+    transition: width 0.25s ease;
+    position: relative;
+  }
+  .plan-progress-fill::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.3) 50%, rgba(255,255,255,0) 100%);
+    animation: progress-shine 1.4s ease-in-out infinite;
+  }
+  @keyframes progress-shine {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+  }
+  .plan-progress.done .plan-progress-fill {
+    background: linear-gradient(90deg, #3aad52 0%, var(--accent-green) 50%, #6ee07a 100%);
+  }
+  .plan-progress.done .plan-progress-percent { color: var(--accent-green); }
+  .plan-progress.done .plan-progress-title .spinner { display: none; }
+  .plan-progress.error .plan-progress-fill {
+    background: linear-gradient(90deg, #d95555 0%, var(--accent-red) 100%);
+  }
+  .plan-progress.error .plan-progress-percent { color: var(--accent-red); }
+
+  /* ===== 站点图例 ===== */
+  .legend {
+    position: absolute;
+    bottom: 20px;
+    right: 20px;
+    background: rgba(26,29,39,0.88);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: 10px 14px;
+    z-index: 1000;
+    font-size: 11px;
+    color: var(--text-secondary);
+    box-shadow: var(--shadow-md);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+  .legend-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+  .legend-swatch {
+    width: 0;
+    height: 0;
+    border-left: 7px solid transparent;
+    border-right: 7px solid transparent;
+    border-bottom: 14px solid;
+    position: relative;
+    flex-shrink: 0;
+  }
+  .legend-section { color: var(--text-tertiary); font-size: 10px; margin: 5px 0 3px; border-top: 1px solid var(--border-light); padding-top: 4px; }
+  .legend-section:first-child { border-top: none; padding-top: 0; margin-top: 0; }
+
+  /* ===== 地图底部邻区过滤条 ===== */
+  #nbr-score-bar {
+    position: absolute;
+    bottom: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1000;
+    background: rgba(26,29,39,0.88);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: 8px 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    white-space: nowrap;
+    box-shadow: var(--shadow-md);
+  }
+  #nbr-score-bar-title {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-right: 4px;
+  }
+  #nbr-score-bar label {
+    color: var(--text-tertiary);
+    font-size: 11px;
+    font-weight: 500;
+  }
+  #nbr-score-bar select {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    padding: 3px 8px;
+    font-size: 11px;
+    height: 24px;
+    outline: none;
+    font-family: inherit;
+  }
+  #nbr-score-bar select:focus { border-color: var(--accent-blue); box-shadow: 0 0 0 2px var(--glow-blue); }
+  #nbr-score-min { width: 120px; height: 14px; cursor: pointer; }
+  #nbr-score-min-label {
+    min-width: 36px;
+    font-family: monospace;
+    font-size: 11px;
+    color: var(--accent-blue);
+    font-weight: 600;
+  }
+  .nbr-score-hint {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    font-family: monospace;
+    margin-left: 4px;
+  }
+
+  /* ===== 弹窗 ===== */
+  .modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(4px);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .modal {
+    background: rgba(26,29,39,0.95);
+    border: 1px solid var(--border-hover);
+    border-radius: var(--radius-lg);
+    padding: 20px;
+    min-width: 400px;
+    max-width: 80vw;
+    max-height: 80vh;
+    overflow: auto;
+    box-shadow: 0 24px 64px rgba(0,0,0,0.6);
+    backdrop-filter: blur(16px);
+  }
+  .modal h3 { color: var(--text-primary); margin-bottom: 12px; font-size: 15px; }
+  .modal .close-btn { float: right; cursor: pointer; color: var(--text-tertiary); font-size: 18px; line-height: 1; }
+  .modal .close-btn:hover { color: var(--text-primary); }
+
+  /* ===== 范围滑块暗色样式 ===== */
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-runnable-track {
+    height: 4px;
+    background: var(--bg-tertiary);
+    border-radius: 2px;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    height: 12px;
+    width: 12px;
+    border-radius: 50%;
+    background: var(--accent-blue);
+    border: 2px solid var(--bg-secondary);
+    margin-top: -4px;
+    box-shadow: 0 0 6px var(--glow-blue);
+  }
+  input[type="range"]::-moz-range-track {
+    height: 4px;
+    background: var(--bg-tertiary);
+    border-radius: 2px;
+  }
+  input[type="range"]::-moz-range-thumb {
+    height: 12px;
+    width: 12px;
+    border-radius: 50%;
+    background: var(--accent-blue);
+    border: 2px solid var(--bg-secondary);
+    box-shadow: 0 0 6px var(--glow-blue);
+  }
+
+  /* ===== 复选框与单选暗色 ===== */
+  input[type="checkbox"], input[type="radio"] {
+    accent-color: var(--accent-blue);
+  }
+
+  /* ===== Leaflet Popup 暗色 ===== */
+  .leaflet-popup-content-wrapper {
+    background: rgba(26,29,39,0.95) !important;
+    color: var(--text-primary) !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: var(--radius-md) !important;
+    box-shadow: var(--shadow-lg) !important;
+    backdrop-filter: blur(12px);
+  }
+  .leaflet-popup-tip { background: rgba(26,29,39,0.95) !important; }
+  .leaflet-popup-close-button { color: var(--text-tertiary) !important; }
+  .leaflet-popup-close-button:hover { color: var(--text-primary) !important; }
+
+  /* ===== Leaflet Attribution 暗色 ===== */
+  .leaflet-control-attribution {
+    background: rgba(15,17,23,0.7) !important;
+    color: var(--text-tertiary) !important;
+    font-size: 10px !important;
+  }
+  .leaflet-control-attribution a { color: var(--text-secondary) !important; }
+</style>
+</head>
+<body>
+<div id="app">
+
+<!-- 顶部导航栏 -->
+<div id="top-nav">
+  <div class="back-btn" onclick="window.location.href='/'">
+    <span>&larr;</span> 返回首页
+  </div>
+  <div class="page-title">小区规划（PCI + 邻区）大屏</div>
+  <div class="nav-actions">
+    <button class="nav-btn" id="btn-nav-workparams">工参管理</button>
+    <button class="nav-btn" id="btn-nav-config">配置导入</button>
+  </div>
+</div>
+
+<div id="main-content">
+  <!-- 中间地图区域 -->
+  <div id="map-area">
+    <!-- 地图规划按钮 + 浮动卡片 -->
+    <div id="map-plan-bar">
+      <button class="map-plan-trigger" id="trigger-single" onclick="toggleFloatCard('single')">
+        <span class="map-plan-trigger-icon">&#x1F4E1;</span>
+        <span class="map-plan-trigger-label">单站规划</span>
+      </button>
+      <button class="map-plan-trigger" id="trigger-batch" onclick="toggleFloatCard('batch')">
+        <span class="map-plan-trigger-icon">&#x1F4CB;</span>
+        <span class="map-plan-trigger-label">批量规划</span>
+      </button>
+      <button class="map-plan-trigger" id="trigger-nbr" onclick="toggleFloatCard('nbr')">
+        <span class="map-plan-trigger-icon">&#x1F517;</span>
+        <span class="map-plan-trigger-label">邻区参数</span>
+      </button>
+      <div style="width:1px;height:20px;background:var(--border-color);flex-shrink:0;"></div>
+      <button class="map-plan-trigger" id="btn-reset-view" style="padding:8px 10px;" title="重置视图">
+        <span class="map-plan-trigger-icon">&#x1F3E0;</span>
+      </button>
+      <button class="map-plan-trigger" id="btn-zoom-4g" style="padding:8px 10px;" title="聚焦4G">
+        <span style="font-size:10px;font-weight:700;color:var(--accent-green);">4G</span>
+      </button>
+      <button class="map-plan-trigger" id="btn-zoom-5g" style="padding:8px 10px;" title="聚焦5G">
+        <span style="font-size:10px;font-weight:700;color:var(--accent-orange);">5G</span>
+      </button>
+      <!-- hidden: JS 依赖 -->
+      <select id="scene-mode" style="display:none;">
+        <option value="land">陆地(默认)</option>
+        <option value="offshore">近海超远覆盖</option>
+      </select>
+      <div style="flex:1;"></div>
+      <span id="status-line" style="font-size:11px;color:var(--text-tertiary);white-space:nowrap;">v1.2.1</span>
+    </div>
+
+    <!-- 单站规划浮动卡片 -->
+    <div class="float-plan-card" id="float-card-single" style="top:50px;left:20px;width:540px;height:auto;">
+      <div class="float-plan-card-header" data-drag="single">
+        <span class="float-card-icon">&#x1F4E1;</span>
+        <span class="float-card-title">单站规划</span>
+        <button class="float-card-btn close-btn" onclick="closeFloatCard('single')" title="关闭">&#x2715;</button>
+      </div>
+      <div class="float-plan-card-body">
+        <div class="float-plan-fields">
+          <div class="form-row" style="grid-column:1/-1;">
+            <label>规划模式</label>
+            <select id="ss-plan-mode" style="flex:1;">
+              <option value="pci+nbr">PCI规划 + 邻区规划</option>
+              <option value="pci">仅PCI规划</option>
+              <option value="nbr">仅邻区规划</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>制式</label>
+            <select id="ss-rat">
+              <option value="5G">5G</option>
+              <option value="4G">4G</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>频段</label>
+            <select id="ss-freq">
+              <option value="700M">700M</option>
+              <option value="2.6G">2.6G</option>
+              <option value="4.9G">4.9G</option>
+              <option value="默认" data-rat="both">默认</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>类型</label>
+            <select id="ss-ptype">
+              <option value="macro">宏站(700m/5km)</option>
+              <option value="micro">微站(200m/3km)</option>
+              <option value="indoor">室分(100m/2km)</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>经度</label>
+            <input id="ss-lon" type="number" step="0.000001" value="111.78411" placeholder="113.xx" />
+          </div>
+          <div class="form-row">
+            <label>纬度</label>
+            <input id="ss-lat" type="number" step="0.000001" value="22.17525" placeholder="22.xx" />
+          </div>
+          <div class="form-row">
+            <label>扇区数</label>
+            <input id="ss-nsectors" type="number" min="1" max="6" value="3" title="扇区数: 1-6，决定方位角间隔" />
+          </div>
+          <div class="form-row">
+            <label>方位角</label>
+            <input id="ss-az" type="text" value="60,180,270" style="max-width:110px;" />
+            <span id="ss-az-hint" style="font-size:10px;color:var(--text-tertiary);white-space:nowrap;"></span>
+          </div>
+          <div class="form-row" style="flex-wrap: wrap; gap: 4px 10px;">
+            <label style="min-width:auto;">邻区</label>
+            <label style="font-size:11px;color:var(--text-secondary);"><input type="checkbox" id="ss-nbr-4g4g" checked />4G↔4G</label>
+            <label style="font-size:11px;color:var(--text-secondary);"><input type="checkbox" id="ss-nbr-4g5g" checked />4G↔5G</label>
+            <label style="font-size:11px;color:var(--text-secondary);"><input type="checkbox" id="ss-nbr-5g4g" checked />5G↔4G</label>
+            <label style="font-size:11px;color:var(--text-secondary);"><input type="checkbox" id="ss-nbr-5g5g" checked />5G↔5G</label>
+          </div>
+          <div class="form-row">
+            <label>得分阈值</label>
+            <input id="ss-score-threshold" type="number" min="0" max="1" step="0.05" value="0.5" style="max-width:80px;" />
+          </div>
+        </div>
+        <div class="float-plan-actions">
+          <button class="btn btn-primary" id="btn-plan-single">规划</button>
+          <button class="btn btn-success btn-small" id="btn-export-split">导出xlsx</button>
+        </div>
+      </div>
+      <div class="float-card-resize" data-resize="single"></div>
+    </div>
+
+    <!-- 批量规划浮动卡片 -->
+    <div class="float-plan-card" id="float-card-batch" style="top:50px;left:460px;width:380px;height:auto;">
+      <div class="float-plan-card-header" data-drag="batch">
+        <span class="float-card-icon">&#x1F4CB;</span>
+        <span class="float-card-title">批量规划</span>
+        <button class="float-card-btn close-btn" onclick="closeFloatCard('batch')" title="关闭">&#x2715;</button>
+      </div>
+      <div class="float-plan-card-body">
+        <input type="file" id="batch-file" accept=".xlsx,.xls,.csv" hidden />
+        <div class="float-plan-fields">
+          <div class="form-row" style="grid-column:1/-1;">
+            <label>规划模式</label>
+            <select id="batch-plan-mode" style="flex:1;">
+              <option value="pci+nbr">PCI规划 + 邻区规划</option>
+              <option value="pci">仅PCI规划</option>
+              <option value="nbr">仅邻区规划</option>
+            </select>
+          </div>
+          <div class="btn-group" style="grid-column:1/-1;">
+            <button class="btn btn-small" id="btn-batch-tpl-4g">4G模板</button>
+            <button class="btn btn-small" id="btn-batch-tpl-5g">5G模板</button>
+            <button class="btn btn-small" id="btn-batch-tpl-both">双制式</button>
+          </div>
+          <p style="grid-column:1/-1;font-size:10px;line-height:1.45;color:var(--text-tertiary);margin:0;">
+            表头含 <span style="color:#c00000;">[必填]</span>/<span style="color:#595959;">[可选]</span> 与 <span style="color:#b8860b;">[枚举]</span>/<span style="color:#4dabf7;">[开放]</span>；详见模板内「表头图例」「字段说明」
+          </p>
+          <div class="form-row" style="grid-column:1/-1;">
+            <button class="btn" id="btn-batch-pick" style="flex:1">选择文件</button>
+            <span id="batch-filename" style="font-size:11px;color:var(--text-tertiary)"></span>
+          </div>
+        </div>
+        <div class="float-plan-actions">
+          <button class="btn btn-warning" id="btn-batch-plan" style="flex:1">规划并导出</button>
+        </div>
+      </div>
+      <div class="float-card-resize" data-resize="batch"></div>
+    </div>
+
+    <!-- 邻区参数浮动卡片 -->
+    <div class="float-plan-card" id="float-card-nbr" style="top:50px;left:860px;width:340px;height:auto;">
+      <div class="float-plan-card-header" data-drag="nbr">
+        <span class="float-card-icon">&#x1F517;</span>
+        <span class="float-card-title">邻区参数</span>
+        <button class="float-card-btn close-btn" onclick="closeFloatCard('nbr')" title="关闭">&#x2715;</button>
+      </div>
+      <div class="float-plan-card-body">
+        <div class="float-plan-fields">
+          <div class="form-row">
+            <label>最大邻区数</label>
+            <input type="number" id="max-neighbors" value="16" min="1" max="64" />
+          </div>
+          <div class="form-row">
+            <label>最大距离(km)</label>
+            <input type="number" id="max-distance" value="5.0" step="0.5" min="0.1" />
+          </div>
+          <div class="form-row">
+            <label>距离权重</label>
+            <input type="number" id="weight-distance" value="0.7" step="0.05" min="0" max="1" />
+          </div>
+          <div class="form-row">
+            <label>交叠权重</label>
+            <input type="number" id="weight-overlap" value="0.3" step="0.05" min="0" max="1" />
+          </div>
+          <div class="form-row">
+            <label>得分阈值</label>
+            <input type="number" id="score-threshold" value="0.10" step="0.05" min="0" max="1" />
+          </div>
+          <div class="form-row" style="grid-column:1/-1;">
+            <label><input type="checkbox" id="enable-cross-system" checked /> 异系统邻区</label>
+          </div>
+        </div>
+      </div>
+      <div class="float-card-resize" data-resize="nbr"></div>
+    </div>
+
+    <div id="map-wrap">
+      <div id="map"></div>
+      <div class="plan-progress" id="plan-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+        <div class="plan-progress-header">
+          <div class="plan-progress-title">
+            <span class="spinner"></span>
+            <span id="pp-title">规划中…</span>
+          </div>
+          <div class="plan-progress-percent" id="pp-percent">0%</div>
+        </div>
+        <div class="plan-progress-stage" id="pp-stage">正在准备…</div>
+        <div class="plan-progress-bar"><div class="plan-progress-fill" id="pp-fill"></div></div>
+      </div>
+      <div id="nbr-score-bar">
+        <span id="nbr-score-bar-title">邻区过滤</span>
+        <label>类型</label>
+        <select id="nbr-score-type">
+          <option value="all">全部</option>
+          <option value="4G_4G">4G↔4G</option>
+          <option value="4G_5G">4G↔5G</option>
+          <option value="5G_4G">5G↔4G</option>
+          <option value="5G_5G">5G↔5G</option>
+        </select>
+        <label>得分</label>
+        <input type="range" id="nbr-score-min" min="0" max="100" value="0" step="1" />
+        <span id="nbr-score-min-label">≥0.00</span>
+        <span id="nbr-score-range" class="nbr-score-hint">—</span>
+      </div>
+      <div class="legend">
+        <div class="legend-section">扇区 mod3 填色</div>
+        <div class="legend-row">
+          <div class="legend-swatch" style="border-bottom-color:#ff6b6b; opacity:0.85;"></div>
+          mod3=0 (红)
+        </div>
+        <div class="legend-row">
+          <div class="legend-swatch" style="border-bottom-color:#ffd43b; opacity:0.85;"></div>
+          mod3=1 (黄)
+        </div>
+        <div class="legend-row">
+          <div class="legend-swatch" style="border-bottom-color:#4dabf7; opacity:0.85;"></div>
+          mod3=2 (蓝)
+        </div>
+        <div class="legend-row">
+          <div class="legend-swatch" style="border-bottom-color:#dc2626; opacity:0.85;"></div>
+          冲突 (红)
+        </div>
+        <div class="legend-section">规划站点</div>
+        <div class="legend-row">
+          <div class="legend-swatch" style="border-bottom-color:#facc15; opacity:0.85;"></div>
+          宏站 (macro)
+        </div>
+        <div class="legend-row">
+          <div class="legend-swatch" style="border-bottom-color:#fb923c; opacity:0.85;"></div>
+          微站 (micro)
+        </div>
+        <div class="legend-row">
+          <div class="legend-swatch" style="border-bottom-color:#fde047; opacity:0.85;"></div>
+          室分 (indoor)
+        </div>
+        <div class="legend-section">邻区类型</div>
+        <div class="legend-row"><div style="width:14px;height:2px;background:#2563eb;"></div>4G ↔ 4G</div>
+        <div class="legend-row"><div style="width:14px;height:2px;background:#10b981;"></div>4G ↔ 5G</div>
+        <div class="legend-row"><div style="width:14px;height:2px;background:#ef4444;"></div>5G ↔ 4G</div>
+        <div class="legend-row"><div style="width:14px;height:2px;background:#8b5cf6;"></div>5G ↔ 5G</div>
+        <div class="legend-section">PCI mod3 数字标签</div>
+        <div class="legend-row" style="font-size:10px;color:var(--text-tertiary);">
+          勾选 🔢 4G/5G PCI 标签图层后, 扇区中心显示 PCI 数字, 颜色同 mod3 填色
+        </div>
+        <div class="legend-row"><span style="display:inline-block;width:18px;text-align:center;font-family:monospace;font-weight:700;color:#ff6b6b;border:1px solid rgba(255,107,107,0.5);background:rgba(15,17,23,0.78);border-radius:3px;font-size:10px;line-height:14px;">0</span>mod3=0 (红)</div>
+        <div class="legend-row"><span style="display:inline-block;width:18px;text-align:center;font-family:monospace;font-weight:700;color:#ffd43b;border:1px solid rgba(255,212,59,0.5);background:rgba(15,17,23,0.78);border-radius:3px;font-size:10px;line-height:14px;">1</span>mod3=1 (黄)</div>
+        <div class="legend-row"><span style="display:inline-block;width:18px;text-align:center;font-family:monospace;font-weight:700;color:#4dabf7;border:1px solid rgba(77,171,247,0.5);background:rgba(15,17,23,0.78);border-radius:3px;font-size:10px;line-height:14px;">2</span>mod3=2 (蓝)</div>
+      </div>
+    </div>
+    <!-- 底部统计面板 (已隐藏，统计信息移至地图上方) -->
+    <div id="bottom-panel" style="display:none;">
+      <span id="stat-total-cells" style="display:none;">0</span>
+      <span id="stat-lte-cells" style="display:none;">0</span>
+      <span id="stat-nr-cells" style="display:none;">0</span>
+      <span id="stat-conflicts" style="display:none;">0</span>
+      <span id="stat-neighbors" style="display:none;">0</span>
+    </div>
+  </div>
+
+  <!-- 右侧详情面板 -->
+  <div id="detail-panel">
+    <div id="detail-header">小区详情</div>
+    <div class="detail-log-section">
+      <div class="log-panel-header">
+        <span class="log-panel-title">操作日志</span>
+        <div class="log-panel-actions">
+          <button id="btn-log-copy" type="button" title="复制全部日志">复制</button>
+          <button id="btn-log-clear" type="button" title="清空日志">清空</button>
+        </div>
+      </div>
+      <div id="log-panel"></div>
+    </div>
+    <div id="detail-body">
+      <div style="color: var(--text-tertiary); font-size: 12px; text-align: center; padding: 40px 0;">
+        点击地图上的小区查看详情
+      </div>
+    </div>
+  </div>
+</div>
+</div><!-- end #app -->
+
+<!-- 冲突弹窗 -->
+<div id="conflict-modal" class="modal-overlay" style="display:none;">
+  <div class="modal">
+    <span class="close-btn" onclick="document.getElementById('conflict-modal').style.display='none'">&times;</span>
+    <h3 id="conflict-modal-title">冲突清单</h3>
+    <div id="conflict-modal-body"></div>
+  </div>
+</div>
+
+<script src="/static/vendor/leaflet.js"></script>
+
+<script>
+(function(){
+  var STORAGE_KEY = 'plan-sidebar-collapse-v2';
+  function getSavedState(){
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; } catch(e){ return {}; }
+  }
+  function saveState(key, collapsed){
+    var s = getSavedState();
+    s[key] = collapsed;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+  }
+  document.addEventListener('DOMContentLoaded', function(){
+    var sections = document.querySelectorAll('#sidebar .section');
+    var saved = getSavedState();
+    sections.forEach(function(sec, idx){
+      var header = sec.querySelector('.section-header');
+      if(!header) return;
+      var title = sec.querySelector('.section-title');
+      var key = title ? (title.textContent.trim().replace(/\s+/g,'-')) : ('sec-'+idx);
+      var isCollapsed;
+      if(saved.hasOwnProperty(key)){
+        isCollapsed = saved[key];
+      } else {
+        isCollapsed = idx > 0;
+      }
+      if(isCollapsed) sec.classList.add('collapsed');
+      header.addEventListener('click', function(e){
+        if(e.target.closest('input, select, button, textarea')) return;
+        sec.classList.toggle('collapsed');
+        saveState(key, sec.classList.contains('collapsed'));
+      });
+    });
+    // 浮动卡片 toggle / drag / resize
+    window.toggleFloatCard = function(type) {
+      var card = document.getElementById('float-card-' + type);
+      var trigger = document.getElementById('trigger-' + type);
+      var isVisible = card.classList.contains('visible');
+      if (isVisible) {
+        card.classList.remove('visible');
+        trigger.classList.remove('active');
+      } else {
+        card.classList.add('visible');
+        trigger.classList.add('active');
+      }
+    };
+    window.closeFloatCard = function(type) {
+      var card = document.getElementById('float-card-' + type);
+      var trigger = document.getElementById('trigger-' + type);
+      card.classList.remove('visible');
+      trigger.classList.remove('active');
+    };
+
+    // 辅助函数：将浮动卡片约束在父容器内
+    function clampCard(card) {
+      var pRect = card.parentElement.getBoundingClientRect();
+      var curLeft = parseFloat(card.style.left) || 0;
+      var curTop = parseFloat(card.style.top) || 0;
+      var maxLeft = Math.max(0, pRect.width - card.offsetWidth);
+      var maxTop = Math.max(0, pRect.height - card.offsetHeight);
+      card.style.left = Math.max(0, Math.min(curLeft, maxLeft)) + 'px';
+      card.style.top = Math.max(0, Math.min(curTop, maxTop)) + 'px';
+    }
+
+    // 拖动逻辑
+    document.querySelectorAll('.float-plan-card-header[data-drag]').forEach(function(header) {
+      var startX, startY, origX, origY, card;
+      header.addEventListener('mousedown', function(e) {
+        if (e.target.closest('.float-card-btn')) return;
+        card = header.closest('.float-plan-card');
+        startX = e.clientX; startY = e.clientY;
+        var rect = card.getBoundingClientRect();
+        var parentRect = card.parentElement.getBoundingClientRect();
+        origX = rect.left - parentRect.left;
+        origY = rect.top - parentRect.top;
+        card.classList.add('dragging');
+        card.style.left = origX + 'px';
+        card.style.top = origY + 'px';
+        card.style.right = 'auto';
+        function onMove(ev) {
+          var dx = ev.clientX - startX;
+          var dy = ev.clientY - startY;
+          var newLeft = origX + dx;
+          var newTop = origY + dy;
+          var pRect = card.parentElement.getBoundingClientRect();
+          newLeft = Math.max(0, Math.min(newLeft, pRect.width - card.offsetWidth));
+          newTop = Math.max(0, Math.min(newTop, pRect.height - card.offsetHeight));
+          card.style.left = newLeft + 'px';
+          card.style.top = newTop + 'px';
+        }
+        function onUp() {
+          card.classList.remove('dragging');
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+        }
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+        e.preventDefault();
+      });
+    });
+
+    // 缩放逻辑
+    document.querySelectorAll('.float-card-resize[data-resize]').forEach(function(handle) {
+      var startX, startY, startW, startH, card;
+      handle.addEventListener('mousedown', function(e) {
+        card = handle.closest('.float-plan-card');
+        startX = e.clientX; startY = e.clientY;
+        startW = card.offsetWidth; startH = card.offsetHeight;
+        card.classList.add('resizing');
+        function onMove(ev) {
+          var pRect = card.parentElement.getBoundingClientRect();
+          var curLeft = parseFloat(card.style.left) || 0;
+          var curTop = parseFloat(card.style.top) || 0;
+          var newW = Math.max(280, Math.min(startW + (ev.clientX - startX), pRect.width - curLeft));
+          var newH = Math.max(120, Math.min(startH + (ev.clientY - startY), pRect.height - curTop));
+          card.style.width = newW + 'px';
+          card.style.height = newH + 'px';
+        }
+        function onUp() {
+          card.classList.remove('resizing');
+          clampCard(card);
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+        }
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+        e.preventDefault();
+        e.stopPropagation();
+      });
+    });
+  });
+})();
+</script>
+
+<script src="/static/js/api.js"></script>
+<script src="/static/js/map.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

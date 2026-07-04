@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>网优百宝箱 - 功能导航</title>
+<link rel="icon" href="data:,">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%;
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    color: #e0e0e0;
+    overflow-x: hidden;
+  }
+
+  /* 顶部标题栏 */
+  .header {
+    padding: 30px 20px 10px;
+    text-align: center;
+  }
+  .header h1 {
+    font-size: 32px;
+    font-weight: 700;
+    background: linear-gradient(90deg, #4fc3f7, #7c4dff, #e040fb);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 8px;
+    letter-spacing: 2px;
+  }
+  .header p {
+    font-size: 14px;
+    color: #8899aa;
+  }
+
+  /* 主内容区 */
+  .main {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 20px 20px;
+  }
+
+  /* 分组标题 */
+  .section-label {
+    font-size: 13px;
+    color: #667788;
+    margin-bottom: 12px;
+    padding-left: 4px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+
+  /* 卡片网格 */
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+    margin-bottom: 28px;
+  }
+  .card-grid:last-child {
+    margin-bottom: 0;
+  }
+
+  /* 功能卡片 */
+  .feature-card {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    padding: 20px 18px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    position: relative;
+    overflow: hidden;
+    backdrop-filter: blur(10px);
+  }
+  .feature-card::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.05), transparent);
+    transition: left 0.5s ease;
+  }
+  .feature-card:hover {
+    transform: translateY(-4px);
+    border-color: rgba(79, 195, 247, 0.4);
+    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.3), 0 0 20px rgba(79, 195, 247, 0.1);
+  }
+  .feature-card:hover::before {
+    left: 100%;
+  }
+
+  .card-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    margin-bottom: 12px;
+  }
+  .feature-card.plan .card-icon {
+    background: linear-gradient(135deg, #4fc3f7, #29b6f6);
+    box-shadow: 0 4px 20px rgba(79, 195, 247, 0.4);
+  }
+  .feature-card.pci .card-icon {
+    background: linear-gradient(135deg, #ff6b6b, #ee5a24);
+    box-shadow: 0 4px 20px rgba(255, 107, 107, 0.4);
+  }
+  .feature-card.config .card-icon {
+    background: linear-gradient(135deg, #7c4dff, #651fff);
+    box-shadow: 0 4px 20px rgba(124, 77, 255, 0.4);
+  }
+  .feature-card.config-data .card-icon {
+    background: linear-gradient(135deg, #f59e0b, #d97706);
+    box-shadow: 0 4px 20px rgba(245, 158, 11, 0.4);
+  }
+  .feature-card.workparams .card-icon {
+    background: linear-gradient(135deg, #67c23a, #52c41a);
+    box-shadow: 0 4px 20px rgba(103, 194, 58, 0.4);
+  }
+
+  .card-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: #fff;
+    margin-bottom: 6px;
+  }
+  .card-desc {
+    font-size: 12px;
+    color: #8899aa;
+    line-height: 1.5;
+    margin-bottom: 12px;
+  }
+  .card-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 12px;
+  }
+  .card-tag {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 20px;
+    background: rgba(255, 255, 255, 0.08);
+    color: #aaa;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+  }
+
+  .card-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #4fc3f7;
+    font-weight: 500;
+  }
+  .card-action::after {
+    content: "→";
+    transition: transform 0.2s ease;
+  }
+  .feature-card:hover .card-action::after {
+    transform: translateX(4px);
+  }
+
+  /* 页脚 */
+  .footer {
+    text-align: center;
+    padding: 40px 20px;
+    color: #556;
+    font-size: 12px;
+  }
+
+  /* 响应式 */
+  @media (max-width: 640px) {
+    .header h1 { font-size: 24px; }
+    .card-grid { grid-template-columns: 1fr; }
+    .main { padding: 20px 16px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>网优百宝箱</h1>
+  <p>Network Optimization Toolbox · v1.2.1</p>
+</div>
+
+<div class="main">
+
+  <!-- 功能分析 -->
+  <div class="section-label">功能分析</div>
+  <div class="card-grid">
+
+    <!-- 小区规划卡片 -->
+    <div class="feature-card plan" onclick="window.location.href='/plan'">
+      <div class="card-icon">📡</div>
+      <div class="card-title">小区规划</div>
+      <div class="card-desc">PCI 智能规划 + 邻区自动优化，支持 4G/5G 双制式，地图可视化展示规划结果。</div>
+      <div class="card-tags">
+        <span class="card-tag">PCI规划</span>
+        <span class="card-tag">邻区优化</span>
+        <span class="card-tag">地图可视化</span>
+        <span class="card-tag">干扰分析</span>
+      </div>
+      <div class="card-action">进入功能</div>
+    </div>
+
+    <!-- PCI干扰分析卡片 -->
+    <div class="feature-card pci" onclick="window.location.href='/pci'">
+      <div class="card-icon">🔍</div>
+      <div class="card-title">PCI 干扰分析</div>
+      <div class="card-desc">PCI 干扰检测与优化，支持同频/邻频/冲突/Mod3/Mod6 多维分析，全网或局部 PCI 重规划。</div>
+      <div class="card-tags">
+        <span class="card-tag">干扰检测</span>
+        <span class="card-tag">PCI冲突</span>
+        <span class="card-tag">Mod3/Mod6</span>
+        <span class="card-tag">全网规划</span>
+      </div>
+      <div class="card-action">进入功能</div>
+    </div>
+
+  </div>
+
+  <!-- 数据导入 -->
+  <div class="section-label">数据导入</div>
+  <div class="card-grid">
+
+    <!-- 工参导入卡片 -->
+    <div class="feature-card workparams" onclick="window.location.href='/workparams'">
+      <div class="card-icon">📋</div>
+      <div class="card-title">工参导入</div>
+      <div class="card-desc">4G/5G 工参数据导入与管理，支持模板下载、追加/替换模式、数据导出等功能。</div>
+      <div class="card-tags">
+        <span class="card-tag">工参数据</span>
+        <span class="card-tag">4G/5G</span>
+        <span class="card-tag">模板下载</span>
+        <span class="card-tag">数据导出</span>
+      </div>
+      <div class="card-action">进入功能</div>
+    </div>
+
+    <!-- 网管导入配置卡片 -->
+    <div class="feature-card config" onclick="window.location.href='/config'">
+      <div class="card-icon">⚙️</div>
+      <div class="card-title">网管导入配置</div>
+      <div class="card-desc">网管配置数据导入管理，支持多 sheet 选择、列映射配置、导入历史记录。</div>
+      <div class="card-tags">
+        <span class="card-tag">Excel导入</span>
+        <span class="card-tag">列配置</span>
+        <span class="card-tag">多Sheet</span>
+        <span class="card-tag">导入历史</span>
+      </div>
+      <div class="card-action">进入配置</div>
+    </div>
+
+    <!-- 网管数据查看卡片 -->
+    <div class="feature-card config-data" onclick="window.location.href='/config-data'">
+      <div class="card-icon">📊</div>
+      <div class="card-title">网管数据查看</div>
+      <div class="card-desc">查看已导入的网管数据表，支持搜索筛选、分页浏览、数据导出。</div>
+      <div class="card-tags">
+        <span class="card-tag">数据浏览</span>
+        <span class="card-tag">搜索筛选</span>
+        <span class="card-tag">分页查看</span>
+        <span class="card-tag">数据导出</span>
+      </div>
+      <div class="card-action">进入查看</div>
+    </div>
+
+  </div>
+</div>
+
+<div class="footer">
+  © 2025 网优百宝箱 · 轻量化 4G/5G 小区规划工具
+</div>
+
+</body>
+</html>
