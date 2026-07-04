@@ -11,8 +11,8 @@ from pathlib import Path
 
 # ── 1. 确定项目根目录 ──
 if getattr(sys, "frozen", False):
-    # PyInstaller 打包后: _MEIPASS 是临时解压目录
-    BASE_DIR = Path(sys._MEIPASS)
+    # PyInstaller onedir: exe 所在目录即为项目根目录（数据文件平级放置）
+    BASE_DIR = Path(sys.executable).parent.resolve()
 else:
     # 源码运行: 本文件所在目录
     BASE_DIR = Path(__file__).parent.resolve()
