@@ -1,6 +1,79 @@
-# 网优百宝箱 v1.2.1
+# 网优百宝箱 v1.3.0
 
 轻量化、可离线部署的4G/5G小区规划工具，支持工参导入、GIS可视化、三级PCI智能规划、7:3加权邻区规划、多制式邻区生成、冲突校验、报表与MML脚本导出，适配陆地及近海超远覆盖场景。
+
+## v1.3.0 更新内容
+
+### 新增功能
+
+- **License 授权校验**：新增 `backend/license_check.py`，基于 HMAC 签名的 `license.lic` 授权文件校验，支持时钟防回拨（本地时钟 + 网络时间双校验，可配置最大漂移天数）
+- **License 签发工具**：新增 `scripts/issue_license.py`，离线签发 `license.lic`，过期日期经 HMAC 签名不可手工篡改
+- **PCI 质量报告**：新增 `backend/pci_quality_report.py`，输出 PCI 规划质量评估报告（mod3/mod6/mod30 冲突统计、复用距离分布等）
+- **导入配置增强**：`config.yaml` 各 sheet 支持 `unique_keys` 配置，导入时按唯一键 `INSERT OR REPLACE`，未配置则沿用 Excel 第 5 行 Primary Key 标记
+
+### 配置变更
+
+`config.yaml` 新增 `license` 段：
+
+```yaml
+license:
+  enabled: true
+  file: license.lic
+  clock_guard:
+    state_file: data/.license_clock
+    allow_rollback_days: 1
+    use_network_time: true
+    max_local_drift_days: 2
+    network_timeout_sec: 2.5
+```
+
+### License 签发与部署
+
+```bash
+# 签发 license.lic（指定过期日期）
+python scripts/issue_license.py --expires 2026-12-31 --out license.lic
+
+# 生产环境建议通过环境变量覆盖默认 HMAC 密钥
+export WYBX_LICENSE_HMAC_KEY="your-strong-secret"
+```
+
+> 默认 HMAC 密钥仅用于开发联调，正式发布前务必通过 `WYBX_LICENSE_HMAC_KEY` 环境变量替换。
+
+### 涉及文件
+
+| 文件 | 类型 | 说明 |
+|---|---|---|
+| `backend/license_check.py`      | 新建 | License 校验 + 时钟防回拨 |
+| `backend/pci_quality_report.py` | 新建 | PCI 规划质量报告 |
+| `scripts/issue_license.py`      | 新建 | License 离线签发脚本 |
+| `backend/main.py`               | 修改 | 接入 license 校验、新增质量报告接口 |
+| `backend/config_imports.py`     | 修改 | 支持 `unique_keys` 按键去重导入 |
+| `backend/config_parser.py`      | 修改 | 解析 license 段与 unique_keys |
+| `backend/data_parser.py`        | 修改 | 工参导入流程适配 unique_keys |
+| `backend/exporter.py`           | 修改 | 导出 PCI 质量报告 |
+| `backend/geo_utils.py`          | 修改 | 几何/距离工具补强 |
+| `backend/pci_planner.py`        | 修改 | 规划流程接入质量报告 |
+| `backend/pci_scope.py`          | 修改 | PCI 作用域计算调整 |
+| `backend/site_planner.py`       | 修改 | 单站/批量规划适配 |
+| `backend/conflict_check.py`     | 修改 | 冲突校验适配新字段 |
+| `backend/db.py`                 | 修改 | 数据库读写适配 |
+| `backend/config.py`             | 修改 | 配置加载接入 license 段 |
+| `config.yaml`                   | 修改 | 新增 license 段与各 sheet unique_keys |
+| `frontend/workparams.html`      | 修改 | 工参页面增强 |
+| `frontend/js/workparams.js`     | 修改 | 工参交互逻辑增强 |
+| `frontend/config-data.html`     | 修改 | 配置数据页面增强 |
+| `frontend/js/config-data.js`    | 修改 | 配置数据交互增强 |
+| `frontend/js/map.js`            | 修改 | 地图渲染适配 |
+| `frontend/js/app.js`            | 修改 | 主应用接入 license 校验提示 |
+| `frontend/js/api.js`            | 修改 | 新增 license/质量报告相关 API 封装 |
+| `frontend/index.html`           | 修改 | 主页适配 |
+| `frontend/pci.html`             | 修改 | PCI 页面适配 |
+| `.gitignore`                    | 修改 | 忽略 `license.lic` / `.license_key` |
+
+## 更新历史
+
+- **v1.3.0** (2026-07-05)：新增 License 授权校验、PCI 质量报告、导入 unique_keys 配置
+- **v1.2.1**：单站/批量规划、干扰分析、RFTools 算法移植
 
 ## 技术栈
 
