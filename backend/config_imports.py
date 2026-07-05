@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -17,6 +17,8 @@ __all__ = [
     "get_enabled_sheets",
     "get_sheet_config",
     "get_sheet_columns",
+    "get_sheet_unique_keys",
+    "resolve_unique_key_columns",
     "get_config_dir",
     "get_sheet_description",
     "is_sheet_enabled",
@@ -118,6 +120,67 @@ def get_sheet_columns(sheet_name: str) -> Dict[str, str]:
     return sheet_cfg.get("columns", {})
 
 
+def get_sheet_unique_keys(sheet_name: str) -> List[str]:
+    """
+    获取 sheet 在 config.yaml 中配置的唯一键（数据库列名列表）。
+
+    支持两种写法:
+      unique_keys: [me_id, cell_local_id]
+      unique_keys:
+        - me_id
+        - cell_local_id
+
+    未配置时返回空列表。
+    """
+    sheet_cfg = get_sheet_config(sheet_name)
+    raw = sheet_cfg.get("unique_keys")
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [raw.strip()] if raw.strip() else []
+    if isinstance(raw, list):
+        return [str(x).strip() for x in raw if x is not None and str(x).strip()]
+    return []
+
+
+def resolve_unique_key_columns(
+    sheet_name: str,
+    column_map: Dict[str, str],
+    excel_pk_columns: List[str],
+) -> Tuple[List[str], List[str]]:
+    """
+    确定导入时用于去重/UPSERT 的唯一键列（数据库列名）。
+
+    优先级:
+      1. config.yaml 的 unique_keys（须为已导入列的子集）
+      2. Excel 第 5 行 Primary Key 标记推导的列
+      3. 无唯一键
+
+    Returns:
+        (pk_columns, warnings)
+    """
+    warnings: List[str] = []
+    dst_cols = set(column_map.values())
+    configured = get_sheet_unique_keys(sheet_name)
+
+    if configured:
+        missing = [c for c in configured if c not in dst_cols]
+        if missing:
+            warnings.append(
+                f"unique_keys 含未导入列 {missing}，已忽略；"
+                f"请检查 config.yaml 中 {sheet_name} 的 columns 映射"
+            )
+            configured = [c for c in configured if c in dst_cols]
+        if configured:
+            return configured, warnings
+        warnings.append("unique_keys 配置无效，回退到 Excel 主键标记")
+
+    if excel_pk_columns:
+        return list(excel_pk_columns), warnings
+
+    return [], warnings
+
+
 def get_sheet_description(sheet_name: str) -> str:
     """获取指定sheet的描述（仅从 config.yaml 读取）"""
     sheet_cfg = get_sheet_config(sheet_name)
@@ -146,11 +209,18 @@ def list_all_config_sheets() -> List[Dict[str, Any]]:
             "enabled": conf.get("enabled", False),
             "description": conf.get("description", ""),
             "column_count": len(conf.get("columns", {})),
+            "unique_keys": get_sheet_unique_keys(name),
         })
     return result
 
 
-def save_sheet_config_to_yaml(sheet_name: str, columns: List[Dict[str, Any]], description: str = "", enabled: bool = True) -> bool:
+def save_sheet_config_to_yaml(
+    sheet_name: str,
+    columns: List[Dict[str, Any]],
+    description: str = "",
+    enabled: bool = True,
+    unique_keys: Optional[List[str]] = None,
+) -> bool:
     """
     保存sheet的列配置到YAML文件
 
@@ -193,12 +263,20 @@ def save_sheet_config_to_yaml(sheet_name: str, columns: List[Dict[str, Any]], de
             if description:
                 sheets_cfg[sheet_name]["description"] = description
             sheets_cfg[sheet_name]["columns"] = col_map
+            if unique_keys is not None:
+                if unique_keys:
+                    sheets_cfg[sheet_name]["unique_keys"] = unique_keys
+                elif "unique_keys" in sheets_cfg[sheet_name]:
+                    del sheets_cfg[sheet_name]["unique_keys"]
         else:
-            sheets_cfg[sheet_name] = {
+            entry: Dict[str, Any] = {
                 "enabled": enabled,
                 "description": description or sheet_name,
                 "columns": col_map,
             }
+            if unique_keys:
+                entry["unique_keys"] = unique_keys
+            sheets_cfg[sheet_name] = entry
 
         # 写回YAML文件
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:

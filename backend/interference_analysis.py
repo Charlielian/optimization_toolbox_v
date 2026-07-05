@@ -19,7 +19,7 @@ import math
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
-from geo_utils import vincenty_distance
+from geo_utils import point_in_area, vincenty_distance
 
 
 # 1° 经度在中低纬度约 111km
@@ -152,26 +152,10 @@ def _build_sectors(cells: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 # ─────────────────────────────────────────────────────────────────
-# cell 是否落在区域 area 内 (rect / circle)
-# area = {"type": "rect",  "lat1": .., "lon1": .., "lat2": .., "lon2": ..}
-#      | {"type": "circle","lat": .., "lon": .., "radius_km": ..}
-# ─────────────────────────────────────────────────────────────────
+# cell 是否落在区域 area 内 (rect / circle / polygon)
 def _in_area(point: Tuple[float, float], area: Optional[Dict[str, Any]]) -> bool:
-    if not area:
-        return True
     lat, lon = point
-    t = area.get("type")
-    if t == "rect":
-        if not (area.get("lat1") is not None and area.get("lat2") is not None):
-            return True
-        return (min(area["lat1"], area["lat2"]) <= lat <= max(area["lat1"], area["lat2"]) and
-                min(area["lon1"], area["lon2"]) <= lon <= max(area["lon1"], area["lon2"]))
-    if t == "circle":
-        if area.get("radius_km") is None:
-            return True
-        # 经纬度粗距离 (上界足够)
-        return _quick_dist_km_ub((lat, lon), (area["lat"], area["lon"])) <= area["radius_km"]
-    return True
+    return point_in_area(lat, lon, area)
 
 
 def filter_sectors_by_area(

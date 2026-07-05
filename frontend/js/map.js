@@ -246,11 +246,14 @@ const MapManager = {
     this.layers.pciLabels5G  = L.layerGroup();
 
     // ── 区域圈选 状态 ─────────────────────────────────
-    this._drawMode = null;     // 'rect' | 'circle' | null
+    this._drawMode = null;     // 'rect' | 'circle' | 'polygon' | null
     this._drawStart = null;    // mousedown latlng
-    this._drawShape = null;    // 临时图形
+    this._drawShape = null;    // 临时图形 (或 polygon 时的 layer group)
+    this._polygonVerts = [];   // 多边形顶点 [L.LatLng, ...]
+    this._polygonPreview = null;
     this._currentArea = null;  // 已完成图形 {type, ...}
     this._areaCallback = null;
+    this._polygonDblClickHandler = null;
     // 阻止圈选时弹出 contextmenu 取点
     this._suppressContext = false;
 
@@ -1194,6 +1197,19 @@ const MapManager = {
     this._bindDrawOnce();
   },
 
+  enableDrawPolygon(cb) {
+    this.disableDraw();
+    this._drawMode = 'polygon';
+    this._areaCallback = cb;
+    this._polygonVerts = [];
+    this._clearPolygonPreview();
+    this._setCrosshair(true);
+    this._bindPolygonDraw();
+    if (window.App && window.App.log) {
+      window.App.log('多边形：依次单击添加顶点，双击结束；Esc 取消', 'info');
+    }
+  },
+
   disableDraw() {
     if (this._drawEventsBound) {
       this.map.off('mousedown', this._drawEventsBound[0]);
@@ -1201,9 +1217,119 @@ const MapManager = {
       this.map.off('mouseup',   this._drawEventsBound[2]);
       this._drawEventsBound = null;
     }
+    if (this._polygonClickHandler) {
+      this.map.off('click', this._polygonClickHandler);
+      this._polygonClickHandler = null;
+    }
+    if (this._polygonMoveHandler) {
+      this.map.off('mousemove', this._polygonMoveHandler);
+      this._polygonMoveHandler = null;
+    }
+    if (this._polygonDblClickHandler) {
+      this.map.off('dblclick', this._polygonDblClickHandler);
+      this._polygonDblClickHandler = null;
+    }
+    if (this._polygonKeyHandler) {
+      document.removeEventListener('keydown', this._polygonKeyHandler);
+      this._polygonKeyHandler = null;
+    }
+    if (this.map) this.map.doubleClickZoom.enable();
+    this._clearPolygonPreview();
+    this._polygonVerts = [];
     this._drawMode = null;
     this._drawStart = null;
     this._setCrosshair(false);
+  },
+
+  _clearPolygonPreview() {
+    if (this._polygonPreview) {
+      this.layers.selection.removeLayer(this._polygonPreview);
+      this._polygonPreview = null;
+    }
+  },
+
+  _refreshPolygonPreview(cursorLatLng) {
+    this._clearPolygonPreview();
+    const verts = this._polygonVerts;
+    if (!verts.length) return;
+    const latlngs = verts.map(v => [v.lat, v.lng]);
+    if (cursorLatLng) latlngs.push([cursorLatLng.lat, cursorLatLng.lng]);
+    const group = L.layerGroup();
+    verts.forEach(v => {
+      L.circleMarker(v, { radius: 5, color: '#06b6d4', weight: 2, fillOpacity: 0.8 }).addTo(group);
+    });
+    if (latlngs.length >= 2) {
+      L.polyline(latlngs, { color: '#06b6d4', weight: 2, dashArray: '4 4' }).addTo(group);
+    }
+    if (latlngs.length >= 3) {
+      L.polygon(latlngs, {
+        color: '#06b6d4', weight: 2, dashArray: cursorLatLng ? '4 4' : null,
+        fillColor: '#06b6d4', fillOpacity: 0.06,
+      }).addTo(group);
+    }
+    this._polygonPreview = group;
+    this.layers.selection.addLayer(group);
+  },
+
+  _finishPolygon() {
+    if (this._polygonVerts.length < 3) {
+      if (window.App && window.App.log) {
+        window.App.log('多边形至少需要 3 个顶点', 'warn');
+      }
+      return;
+    }
+    const points = this._polygonVerts.map(v => [v.lat, v.lng]);
+    const area = { type: 'polygon', points };
+    this._clearPolygonPreview();
+    this._polygonVerts = [];
+    this.setArea(area);
+    this.disableDraw();
+    if (this._areaCallback) {
+      const cb = this._areaCallback;
+      this._areaCallback = null;
+      cb(area);
+    }
+  },
+
+  _bindPolygonDraw() {
+    const onClick = (e) => {
+      if (this._drawMode !== 'polygon') return;
+      L.DomEvent.stopPropagation(e.originalEvent);
+      this._polygonVerts.push(e.latlng);
+      this._refreshPolygonPreview();
+    };
+    const onMove = (e) => {
+      if (this._drawMode !== 'polygon' || !this._polygonVerts.length) return;
+      this._refreshPolygonPreview(e.latlng);
+    };
+    const onDblClick = (e) => {
+      if (this._drawMode !== 'polygon') return;
+      L.DomEvent.stopPropagation(e.originalEvent);
+      L.DomEvent.preventDefault(e.originalEvent);
+      // 双击结束前会多一次 click，去掉重复顶点
+      if (this._polygonVerts.length) this._polygonVerts.pop();
+      this._finishPolygon();
+    };
+    const onKey = (ev) => {
+      if (this._drawMode !== 'polygon') return;
+      if (ev.key === 'Escape') {
+        this._polygonVerts = [];
+        this._clearPolygonPreview();
+        this.disableDraw();
+        if (window.App && window.App.log) {
+          window.App.log('已取消多边形绘制', 'info');
+        }
+      }
+    };
+    this.map.on('click', onClick);
+    this.map.on('mousemove', onMove);
+    this.map.on('dblclick', onDblClick);
+    document.addEventListener('keydown', onKey);
+    this._polygonClickHandler = onClick;
+    this._polygonMoveHandler = onMove;
+    this._polygonDblClickHandler = onDblClick;
+    this._polygonKeyHandler = onKey;
+    this.map.doubleClickZoom.disable();
   },
 
   clearArea() {
@@ -1239,6 +1365,13 @@ const MapManager = {
       });
       this._drawShape = c;
       this.layers.selection.addLayer(c);
+    } else if (area.type === 'polygon' && area.points && area.points.length >= 3) {
+      const latlngs = area.points.map(p => [p[0], p[1]]);
+      const poly = L.polygon(latlngs, {
+        color: '#06b6d4', weight: 2, fillColor: '#06b6d4', fillOpacity: 0.06,
+      });
+      this._drawShape = poly;
+      this.layers.selection.addLayer(poly);
     }
     this._currentArea = area;
   },

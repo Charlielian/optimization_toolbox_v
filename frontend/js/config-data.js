@@ -11,11 +11,52 @@
   let currentPage = 1;
   let pageSize = 50;
 
+  const SYNC_BC = typeof BroadcastChannel !== 'undefined'
+    ? new BroadcastChannel('wybb-cells-sync')
+    : null;
+
   // 初始化
   document.addEventListener('DOMContentLoaded', function () {
     loadTables();
     bindEvents();
+    refreshWorkparamSyncHint();
   });
+
+  function setSyncStatusBar(mode, html) {
+    const bar = document.getElementById('sync-status-bar');
+    const text = document.getElementById('sync-status-text');
+    const link = document.getElementById('sync-status-link');
+    if (!bar || !text) return;
+    bar.classList.remove('syncing', 'ok', 'err');
+    if (mode === 'idle') {
+      bar.classList.remove('visible');
+      return;
+    }
+    bar.classList.add('visible', mode);
+    text.innerHTML = html;
+    if (link) {
+      link.style.display = mode === 'ok' ? '' : 'none';
+    }
+  }
+
+  async function refreshWorkparamSyncHint() {
+    try {
+      const r = await API.getCells();
+      if (!r.success || !r.cells) return;
+      const synced = r.cells.filter(c => c.pci_synced_at).length;
+      const total = r.cells.length;
+      if (total === 0) {
+        setSyncStatusBar('ok', '工参库暂无小区；同步将写入已导入工参中与网管 CGI 匹配的记录。');
+        return;
+      }
+      setSyncStatusBar(
+        'ok',
+        `工参 <b>${total}</b> 条，其中 <b>${synced}</b> 条已标记网管同步（「工参管理」→ 网管同步列）。`
+      );
+    } catch (e) {
+      /* 忽略：服务未就绪 */
+    }
+  }
 
   function bindEvents() {
     // 搜索表
@@ -322,15 +363,22 @@
     const btn = document.getElementById('btn-sync-cells');
     const originalText = btn.textContent;
     btn.disabled = true;
-    btn.textContent = '同步中...';
+    btn.classList.add('btn-sync-running');
+    btn.textContent = '同步中…';
+    setSyncStatusBar(
+      'syncing',
+      '<span class="sync-spin"></span> 正在读取网管 cfg 表并更新工参库，请稍候…'
+    );
 
     API.configSyncCells()
       .then(r => {
         btn.disabled = false;
+        btn.classList.remove('btn-sync-running');
         btn.textContent = originalText;
         if (!r || !r.success) {
-          // 业务失败 (如没数据)
-          alert('同步失败: ' + (r && r.message ? r.message : '未知错误'));
+          const msg = (r && r.message) ? r.message : '未知错误';
+          setSyncStatusBar('err', `同步失败：${escapeHtml(msg)}`);
+          alert('同步失败: ' + msg);
           if (r) {
             showSyncResult({
               success: false,
@@ -344,12 +392,31 @@
           }
           return;
         }
+        const st = r.stats || {};
+        const matched = st.matched_ecgis ?? 0;
+        const marked = st.marked_synced ?? matched;
+        const syncedAll = r.workparam_synced_count ?? marked;
+        const totalAll = r.cells_in_memory ?? '—';
+        setSyncStatusBar(
+          'ok',
+          `同步完成：本次匹配更新 <b>${matched}</b> 条 CGI；工参库共 <b>${totalAll}</b> 条，`
+          + `已标记网管同步 <b>${syncedAll}</b> 条。请到「工参管理」查看「网管同步」列。`
+        );
+        if (SYNC_BC) {
+          SYNC_BC.postMessage({ type: 'cells-sync-done', at: Date.now(), stats: st });
+        }
+        try {
+          localStorage.setItem('wybb_cells_sync_at', String(Date.now()));
+        } catch (err) { /* ignore */ }
         showSyncResult(r);
       })
       .catch(e => {
         btn.disabled = false;
+        btn.classList.remove('btn-sync-running');
         btn.textContent = originalText;
-        alert('同步请求失败: ' + (e.message || e));
+        const msg = e.message || String(e);
+        setSyncStatusBar('err', `请求失败：${escapeHtml(msg)}`);
+        alert('同步请求失败: ' + msg);
       });
   }
 

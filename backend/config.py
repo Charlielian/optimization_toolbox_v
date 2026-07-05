@@ -36,6 +36,10 @@ def _default_config() -> Dict[str, Any]:
         "logging": {
             "level": "INFO",
         },
+        "license": {
+            "enabled": True,
+            "file": "license.lic",
+        },
     }
 
 
@@ -106,6 +110,18 @@ class Config:
     @property
     def log_level(self) -> str:
         return self._cfg.get("logging", {}).get("level", "INFO")
+
+    @property
+    def license_enabled(self) -> bool:
+        return bool(self._cfg.get("license", {}).get("enabled", True))
+
+    @property
+    def license_file(self) -> str:
+        return str(self._cfg.get("license", {}).get("file", "license.lic"))
+
+    @property
+    def raw(self) -> Dict[str, Any]:
+        return self._cfg
 
 
 config = Config(load_config())

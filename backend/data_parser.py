@@ -433,6 +433,44 @@ def parse_work_params(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     }
 
 
+def describe_file_rat_profile(
+    filename: str,
+    rat_counts: Dict[str, int],
+    valid: int = 0,
+) -> Dict[str, Any]:
+    """
+    根据解析结果与文件名推断工参文件的制式画像（4G/5G/混合）。
+    """
+    lte = int(rat_counts.get("LTE") or 0)
+    nr = int(rat_counts.get("NR") or 0)
+    fn = (filename or "").lower()
+
+    if lte > 0 and nr > 0:
+        kind = "mixed"
+        label = "4G+5G 混合"
+    elif nr > 0 and lte == 0:
+        kind = "5G"
+        label = "5G NR"
+    elif lte > 0 and nr == 0:
+        kind = "4G"
+        label = "4G LTE"
+    else:
+        kind = "unknown"
+        label = "未识别制式"
+        if re.search(r"(?<![0-9])5g|nr|gnodeb|gnb", fn):
+            kind, label = "5G", "5G（文件名推断）"
+        elif re.search(r"(?<![0-9])4g|lte|enodeb|eutran", fn):
+            kind, label = "4G", "4G（文件名推断）"
+
+    return {
+        "kind": kind,
+        "label": label,
+        "lte": lte,
+        "nr": nr,
+        "valid": valid,
+    }
+
+
 def _guess_freq_band(rat: str, earfcn: Any) -> str:
     """粗略估计频段,便于分组/着色"""
     if earfcn is None:
@@ -453,4 +491,77 @@ def _guess_freq_band(rat: str, earfcn: Any) -> str:
         if n < 600000: return "Sub6-Low"
         if n < 2425000: return "Sub6-Mid"
         return "mmWave"
+
+
+def finalize_manual_cell(cell: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
+    """
+    单条工参（界面新增/编辑）校验与派生字段，与 Excel 导入后处理一致。
+    返回 (规范化后的小区, 错误列表)；错误非空时不应写入 STATE。
+    """
+    import copy
+
+    cell = copy.deepcopy(cell)
+
+    if cell.get("azimuth") is None:
+        cell["azimuth"] = 0.0
+    if cell.get("pci") is None:
+        cell["pci"] = -1
+        cell["pci_missing"] = True
+    else:
+        cell["pci_missing"] = False
+
+    if cell.get("site_type") is None or cell.get("site_type") == "":
+        cell["site_type"] = "陆地"
+
+    raw_npt = cell.get("nbr_plan_types")
+    if raw_npt:
+        if isinstance(raw_npt, list):
+            cell["nbr_plan_types"] = [str(s).strip() for s in raw_npt if str(s).strip()]
+        else:
+            cell["nbr_plan_types"] = [
+                s.strip() for s in re.split(r"[|,]", str(raw_npt)) if s.strip()
+            ]
+    else:
+        cell["nbr_plan_types"] = None
+
+    cell["plan_site_type"] = to_plan_site_type(
+        cell.get("plan_site_type") or cell.get("site_type")
+    )
+
+    for f in ("n_sectors", "base_azimuth", "locked", "neighbors_json", "updated_at"):
+        if f not in cell or cell.get(f) is None:
+            if f == "n_sectors":
+                cell[f] = 1
+            elif f == "base_azimuth":
+                cell[f] = 0.0
+            elif f == "locked":
+                cell[f] = False
+            elif f == "neighbors_json":
+                cell[f] = "[]"
+            elif f == "updated_at":
+                cell[f] = None
+
+    errs = _validate_cell(cell)
+    if errs:
+        return cell, errs
+
+    freq_raw = cell.get("freq_band_raw")
+    freq_band = normalize_freq_band(cell["rat"], freq_raw)
+    if not freq_band and cell.get("earfcn") is not None:
+        freq_band = _guess_freq_band(cell["rat"], cell.get("earfcn"))
+    cell["freq_band"] = freq_band or "默认"
+
+    enrich_cell_with_sector(cell)
+
+    phy = cell.get("phy_name")
+    if phy:
+        cell["site_name"] = phy
+    else:
+        nm = cell.get("name") or ""
+        cell["site_name"] = nm.rsplit("-", 1)[0] if "-" in nm else nm
+
+    if "neighbors" not in cell or cell["neighbors"] is None:
+        cell["neighbors"] = []
+
+    return cell, []
     return "未知"

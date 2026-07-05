@@ -355,22 +355,16 @@ def save_config_sheet(
             if not table_exists:
                 # 动态建表
                 col_defs = []
-                pk_inline_columns: List[str] = []
                 for col in columns:
                     col_name = col["name"]
                     col_type = col.get("type", "TEXT")
-                    is_pk = col.get("is_pk", False)
-                    if is_pk:
-                        col_defs.append(f"{col_name} {col_type}")
-                        pk_inline_columns.append(col_name)
-                    else:
-                        col_defs.append(f"{col_name} {col_type}")
+                    col_defs.append(f"{col_name} {col_type}")
                 if pk_columns:
-                    # 多主键: 表级 PRIMARY KEY (col1, col2, ...)
+                    # 复合唯一键 / 主键（与 config.yaml unique_keys 或 Excel 主键标记一致）
                     create_sql = (
                         f"CREATE TABLE {table_name} ("
                         f"{','.join(col_defs)}, "
-                        f"PRIMARY KEY ({','.join(pk_inline_columns)})"
+                        f"PRIMARY KEY ({','.join(pk_columns)})"
                         f")"
                     )
                 else:

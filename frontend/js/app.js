@@ -3,6 +3,75 @@ const App = {
   cells: [],
   conflicts: [],
   stats: {},
+  pciQualityByEcgi: {},
+
+  _qualityLabelColor(label) {
+    const m = { 优: '#51cf66', 良: '#4dabf7', 一般: '#ffa94d', 偏差: '#ff922b', 需关注: '#ff6b6b' };
+    return m[label] || '#9aa0b0';
+  },
+
+  _mergePciQualityReport(report) {
+    if (!report?.cells?.length) return;
+    this.pciQualityByEcgi = {};
+    report.cells.forEach((q) => {
+      if (q.ecgi) this.pciQualityByEcgi[q.ecgi] = q;
+    });
+    this.cells.forEach((c) => {
+      const full = this.pciQualityByEcgi[c.ecgi];
+      if (full) c.pci_quality = full;
+    });
+  },
+
+  _renderPciQualityBlock(q, { compact = false } = {}) {
+    if (!q) return '';
+    const col = this._qualityLabelColor(q.quality_label);
+    const scoreLine = `<div class="row"><div class="key">冲突评分</div><div class="val" style="color:${col};font-weight:600;">${q.score} · ${q.quality_label || '—'}</div></div>`;
+    const explain = q.score_explain
+      ? `<div style="font-size:10px;color:#888;line-height:1.45;margin:4px 0 8px;">${q.score_explain}</div>`
+      : '';
+    const nearest = (key, title) => {
+      const n = q[key];
+      if (!n) return `<div class="row"><div class="key">${title}</div><div class="val" style="color:#666;">范围内无</div></div>`;
+      return `<div class="row"><div class="key">${title}</div><div class="val">${n.name || n.ecgi} · PCI ${n.pci} · ${n.distance_km}km · ${n.relation}</div></div>`;
+    };
+    let interHtml = '';
+    const tops = q.top_interference || [];
+    if (tops.length) {
+      interHtml = `<h4 style="color:#ccc;margin:8px 0 4px;font-size:11px;">主要干扰来源 (${tops.length})</h4>
+        <div class="neighbor-list" style="max-height:${compact ? 120 : 200}px;">
+          ${tops.map((t) => `
+            <div class="neighbor-item">
+              <div class="name">${t.name || t.ecgi} <span style="color:#888;">PCI ${t.pci}</span></div>
+              <div class="meta">${t.distance_km}km · ${t.relation} · 贡献 ${t.penalty}${t.back_facing ? ' · 背向减半' : ''}</div>
+            </div>`).join('')}
+        </div>`;
+    } else if (!compact) {
+      interHtml = '<div style="font-size:11px;color:#666;margin-top:6px;">评估半径内无显著 PCI 层干扰贡献</div>';
+    }
+    let candHtml = '';
+    const cands = q.pci_candidates_scores || [];
+    if (cands.length && !compact) {
+      candHtml = `<div style="margin-top:8px;font-size:10px;color:#888;">候选 PCI 评分: ${cands.map((x) => `${x.pci}(${x.score})${x.is_chosen ? '✓' : ''}`).join(' · ')}</div>`;
+    }
+    let hard = '';
+    if (q.hard_violations?.length) {
+      hard = `<div style="margin-top:6px;padding:6px;background:rgba(255,107,107,0.1);border-radius:4px;font-size:10px;color:#ff6b6b;">硬约束: ${q.hard_violations.slice(0, 3).join('; ')}</div>`;
+    }
+    return `${scoreLine}${explain}${nearest('nearest_cell', '最近小区')}${nearest('nearest_same_pci', '最近同PCI')}${nearest('nearest_mod3', '最近Mod3')}${hard}${interHtml}${candHtml}`;
+  },
+
+  _renderPciQualitySummary(summary) {
+    if (!summary || !summary.cells_reported) return '';
+    const dist = summary.quality_distribution || {};
+    const parts = ['优', '良', '一般', '偏差', '需关注'].filter((k) => dist[k]).map((k) => `${k}:${dist[k]}`);
+    return `
+      <div class="info-card" style="border-left:3px solid #4dabf7;margin-bottom:8px;">
+        <div style="font-size:12px;color:#4dabf7;font-weight:bold;margin-bottom:4px;">PCI 质量概览</div>
+        <div class="row"><div class="key">已评估</div><div class="val">${summary.cells_reported} 扇区${summary.truncated ? ' (已截断)' : ''}</div></div>
+        <div class="row"><div class="key">平均评分</div><div class="val">${summary.avg_score}（越小越好）</div></div>
+        <div class="row"><div class="key">分布</div><div class="val" style="font-size:11px;">${parts.join(' · ') || '—'}</div></div>
+      </div>`;
+  },
 
   init() {
     MapManager.init('map');
@@ -104,6 +173,8 @@ const App = {
         this.log(`${logPrefix} 已框选矩形: ${area.lat1.toFixed(4)},${area.lon1.toFixed(4)} → ${area.lat2.toFixed(4)},${area.lon2.toFixed(4)}`, 'success');
       } else if (area.type === 'circle') {
         this.log(`${logPrefix} 已圈选圆形: 中心 ${area.lat.toFixed(4)},${area.lon.toFixed(4)} 半径 ${area.radius_km.toFixed(2)}km`, 'success');
+      } else if (area.type === 'polygon') {
+        this.log(`${logPrefix} 已圈选多边形: ${(area.points || []).length} 个顶点`, 'success');
       }
     };
     const clearMapArea = (logPrefix) => {
@@ -128,6 +199,12 @@ const App = {
       MapManager.enableDrawCircle((area) => onAreaSelected(area, '[干扰分析]'));
       this.log('[干扰分析] 在地图上拖拽画出圆形选区', 'info');
     };
+    if ($('btn-ia-draw-polygon')) $('btn-ia-draw-polygon').onclick = () => {
+      MapManager.disableDraw();
+      MapManager.clearArea();
+      MapManager.enableDrawPolygon((area) => onAreaSelected(area, '[干扰分析]'));
+      this.log('[干扰分析] 多边形：单击加点，双击结束，Esc 取消', 'info');
+    };
     if ($('btn-ia-clear-area')) $('btn-ia-clear-area').onclick = () => clearMapArea('[干扰分析]');
     if ($('btn-pci-draw-rect')) $('btn-pci-draw-rect').onclick = () => {
       MapManager.disableDraw();
@@ -140,6 +217,12 @@ const App = {
       MapManager.clearArea();
       MapManager.enableDrawCircle((area) => onAreaSelected(area, '[PCI规划]'));
       this.log('[PCI规划] 在地图上拖拽画出圆形 → 再点「局部微调」', 'info');
+    };
+    if ($('btn-pci-draw-polygon')) $('btn-pci-draw-polygon').onclick = () => {
+      MapManager.disableDraw();
+      MapManager.clearArea();
+      MapManager.enableDrawPolygon((area) => onAreaSelected(area, '[PCI规划]'));
+      this.log('[PCI规划] 多边形：单击加点，双击结束 → 再点「局部微调」', 'info');
     };
     if ($('btn-pci-clear-area')) $('btn-pci-clear-area').onclick = () => clearMapArea('[PCI规划]');
     // 干扰分析: 网络制式切换时, 刷新频段下拉
@@ -465,6 +548,11 @@ const App = {
       <h4 style="color: #ccc; margin: 8px 0 6px; font-size: 12px;">扇区规划 (${result.planned_cells.length} 扇区 / ${bySite.size} 站)</h4>
     `;
 
+    if (result.pci_quality?.summary) {
+      this._mergePciQualityReport(result.pci_quality);
+      html += this._renderPciQualitySummary(result.pci_quality.summary);
+    }
+
     // 一站一张卡: SSS 组一行 + 扇区 PCI 一行 + 候选 SSS 组一行
     bySite.forEach(g => {
       const typeColor = MapManager.PLAN_COLORS[g.plan_site_type] || '#facc15';
@@ -529,6 +617,15 @@ const App = {
           ` : ''}
 
           <div style="font-size:9px;color:#666;margin-top:4px;">经 ${g.lon?.toFixed(6)}, ${g.lat?.toFixed(6)}</div>
+          ${g.cells.map((c, idx) => {
+            const q = c.pci_quality || this.pciQualityByEcgi[c.ecgi];
+            if (!q) return '';
+            const sec = c.sector_index || (idx + 1);
+            return `<div style="margin-top:8px;padding-top:6px;border-top:1px dashed rgba(255,255,255,0.06);">
+              <div style="font-size:10px;color:#888;margin-bottom:4px;">扇区 S${sec} · PCI ${c.new_pci}</div>
+              ${this._renderPciQualityBlock(q, { compact: true })}
+            </div>`;
+          }).join('')}
         </div>
       `;
     });
@@ -810,6 +907,10 @@ const App = {
       info.innerHTML = `已圈选矩形 → 约 ${this._kmBetween(area.lat1, area.lon1, area.lat2, area.lon2).toFixed(2)}×${this._kmBetween(area.lat1, area.lon1, area.lat2, area.lon2).toFixed(2)} km 见方`;
     } else if (area.type === 'circle') {
       info.innerHTML = `已圈选圆形 → 中心 ${area.lat.toFixed(4)},${area.lon.toFixed(4)} · 半径 <b>${area.radius_km.toFixed(2)} km</b>`;
+    } else if (area.type === 'polygon') {
+      const n = (area.points || []).length;
+      const inPoly = this._cellsInArea(area).length;
+      info.innerHTML = `已圈选多边形 → <b>${n}</b> 个顶点 · 范围内约 <b>${inPoly}</b> 个小区`;
     }
   },
 
@@ -826,6 +927,8 @@ const App = {
       info.innerHTML = `选区内符合「${scope}」约 <b>${n}</b> 个 · 矩形 · 点「局部微调」`;
     } else if (area.type === 'circle') {
       info.innerHTML = `选区内符合「${scope}」约 <b>${n}</b> 个 · 圆 R=${area.radius_km.toFixed(2)}km`;
+    } else if (area.type === 'polygon') {
+      info.innerHTML = `选区内符合「${scope}」约 <b>${n}</b> 个 · 多边形 ${(area.points || []).length} 顶点`;
     }
   },
 
@@ -1040,6 +1143,13 @@ const App = {
       );
       (r.log || []).slice(-30).forEach(line => this.log(line, 'info'));
       this.stats = { ...this.stats, ...(r.stats || {}), conflict_count: conflictCount };
+      if (r.pci_quality) {
+        this._mergePciQualityReport(r.pci_quality);
+        const s = r.pci_quality.summary;
+        if (s?.cells_reported) {
+          this.log(`PCI 质量: 已评估 ${s.cells_reported} 扇区, 均分 ${s.avg_score}（越小越好）`, 'info');
+        }
+      }
       if (r.conflicts?.length) {
         this.conflicts = r.conflicts;
         const conflictEcgis = new Set();
@@ -1083,6 +1193,8 @@ const App = {
         scopeLabel = `矩形区(${selected.length}个小区)`;
       } else if (area.type === 'circle') {
         scopeLabel = `圆形区(中心 ${area.lat.toFixed(4)},${area.lon.toFixed(4)} 半径 ${area.radius_km.toFixed(2)}km, ${selected.length}个小区)`;
+      } else if (area.type === 'polygon') {
+        scopeLabel = `多边形区(${(area.points || []).length}顶点, ${selected.length}个小区)`;
       }
       if (selected.length === 0) {
         this.log(`当前选区内无符合「${scopeHint}」的小区, 请调整网络/频段或重画选区`, 'warn');
@@ -1119,6 +1231,13 @@ const App = {
       const conflictCount = r.conflicts_count ?? 0;
       this.log(`局部 PCI 完成: 影响 ${(r.affected || []).length} 小区, 冲突 ${conflictCount}`, conflictCount > 0 ? 'warn' : 'success');
       (r.log || []).slice(-20).forEach(line => this.log(line, 'info'));
+      if (r.pci_quality) {
+        this._mergePciQualityReport(r.pci_quality);
+        const s = r.pci_quality.summary;
+        if (s?.cells_reported) {
+          this.log(`PCI 质量(局部): 评估 ${s.cells_reported} 扇区, 均分 ${s.avg_score}`, 'info');
+        }
+      }
       await this.refreshCells();
       if (r.conflicts?.length) {
         this.conflicts = r.conflicts;
@@ -1140,21 +1259,38 @@ const App = {
     }
   },
 
+  _pointInPolygon(lat, lon, ring) {
+    const pts = ring || [];
+    if (pts.length < 3) return false;
+    let inside = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const latI = pts[i][0];
+      const lonI = pts[i][1];
+      const latJ = pts[j][0];
+      const lonJ = pts[j][1];
+      if (((latI > lat) !== (latJ > lat)) &&
+        lon < (lonJ - lonI) * (lat - latI) / (latJ - latI + 1e-15) + lonI) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  },
+
   _cellsInArea(area) {
-    const inLat = (lat) => {
-      if (area.type === 'rect') return lat >= Math.min(area.lat1, area.lat2) && lat <= Math.max(area.lat1, area.lat2);
-      return true;
-    };
-    const inLon = (lon) => {
-      if (area.type === 'rect') return lon >= Math.min(area.lon1, area.lon2) && lon <= Math.max(area.lon1, area.lon2);
-      return true;
-    };
+    if (!area) return this.cells;
     return this.cells.filter(c => {
-      if (area.type === 'rect') return inLat(c.lat) && inLon(c.lon);
-      const dx = (c.lon - area.lon) * Math.cos(c.lat * Math.PI / 180);
-      const dy = c.lat - area.lat;
-      const d = Math.sqrt(dx * dx + dy * dy) * 111.0;
-      return d <= area.radius_km;
+      if (c.lat == null || c.lon == null) return false;
+      if (area.type === 'rect') {
+        return c.lat >= Math.min(area.lat1, area.lat2) && c.lat <= Math.max(area.lat1, area.lat2) &&
+          c.lon >= Math.min(area.lon1, area.lon2) && c.lon <= Math.max(area.lon1, area.lon2);
+      }
+      if (area.type === 'circle') {
+        return this._kmBetween(area.lat, area.lon, c.lat, c.lon) <= area.radius_km;
+      }
+      if (area.type === 'polygon') {
+        return this._pointInPolygon(c.lat, c.lon, area.points);
+      }
+      return true;
     });
   },
 
@@ -1170,7 +1306,9 @@ const App = {
       return;
     }
     const n = this._cellsInArea(area).filter(c => this._cellMatchesPciScope(c)).length;
-    const shape = area.type === 'rect' ? '矩形' : `圆 R=${area.radius_km.toFixed(2)}km`;
+    const shape = area.type === 'rect' ? '矩形'
+      : area.type === 'polygon' ? `多边形(${(area.points || []).length}顶点)`
+      : `圆 R=${area.radius_km.toFixed(2)}km`;
     el.innerHTML = `已圈选 ${shape} · 「${scope}」约 <b>${n}</b> 个 → 请点右侧 <b style="color:var(--accent-orange,#e6a23c)">局部微调</b>（蓝钮「全网规划」会忽略圈选）`;
     if (partialBtn) partialBtn.classList.add('pci-partial-highlight');
   },
@@ -1280,8 +1418,31 @@ const App = {
     }
   },
 
-  showCellDetail(cell) {
+  async showCellDetail(cell) {
     const body = document.getElementById('detail-body');
+    const header = document.getElementById('detail-header');
+    if (header) header.textContent = cell.name || cell.ecgi || '小区详情';
+    let q = cell.pci_quality || this.pciQualityByEcgi[cell.ecgi];
+    const pciVal = cell.new_pci ?? cell.pci;
+    if (!q && pciVal != null && this.cells.length > 0) {
+      try {
+        const r = await API.pciQuality({
+          ecgis: [cell.ecgi],
+          check_mod30: document.getElementById('check-mod30')?.checked !== false,
+          directional_filter: document.getElementById('directional-filter')?.checked !== false,
+        });
+        const one = r.pci_quality?.cells?.[0];
+        if (one) {
+          q = one;
+          this.pciQualityByEcgi[cell.ecgi] = one;
+        }
+      } catch (_) { /* 静默 */ }
+    }
+    const qualitySection = q
+      ? `<h4 style="color: #ccc; margin: 12px 0 6px; font-size: 12px;">PCI 质量与干扰</h4><div class="info-card" style="border-left:3px solid ${this._qualityLabelColor(q.quality_label)};">${this._renderPciQualityBlock(q)}</div>`
+      : (pciVal != null
+        ? '<div style="font-size:11px;color:#888;margin-top:8px;">暂无 PCI 质量数据，请先执行 PCI 规划</div>'
+        : '');
     body.innerHTML = `
       <div class="info-card">
         <div class="row"><div class="key">ECGI</div><div class="val">${cell.ecgi}</div></div>
@@ -1297,6 +1458,7 @@ const App = {
         <div class="row"><div class="key">站点</div><div class="val">${cell.site_name || '-'}</div></div>
         <div class="row"><div class="key">邻区数</div><div class="val">${(cell.neighbors || []).length}</div></div>
       </div>
+      ${qualitySection}
       <h4 style="color: #ccc; margin: 8px 0 6px; font-size: 12px;">邻区列表 (${(cell.neighbors || []).length})</h4>
       <div class="neighbor-list">
         ${(cell.neighbors || []).map(n => `

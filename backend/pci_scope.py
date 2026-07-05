@@ -23,10 +23,26 @@ def normalize_rat_filter(rat: Optional[str]) -> Optional[str]:
 
 
 def cell_freq_band_key(cell: Dict[str, Any]) -> str:
-    raw = cell.get("freq_band") or cell.get("freq_band_raw") or cell.get("freq_band_label") or ""
+    raw = (
+        cell.get("freq_band")
+        or cell.get("freq_band_raw")
+        or cell.get("plan_freq_band")
+        or cell.get("freq_band_label")
+        or ""
+    )
     if not raw or str(raw).strip() in ("", "默认", "—", "-"):
         return "UNKNOWN"
     return normalize_freq_band(str(raw).strip())
+
+
+def cells_same_freq_band_for_pci(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+    """
+    PCI 干扰/冲突仅在同制式且同频段（同频）小区之间计算。
+    LTE 与 NR 的 PCI 编号空间独立；不同频段（如 700M vs 2.6G）不互扰。
+    """
+    if a.get("rat", "LTE") != b.get("rat", "LTE"):
+        return False
+    return cell_freq_band_key(a) == cell_freq_band_key(b)
 
 
 def cell_matches_pci_scope(

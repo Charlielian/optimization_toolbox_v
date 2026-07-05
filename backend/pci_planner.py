@@ -18,6 +18,7 @@ from cell_filters import is_nb_znh_cell
 from pci_scope import (  # noqa: I001
     cell_freq_band_key,
     cell_matches_pci_scope,
+    cells_same_freq_band_for_pci,
     clear_new_pci_in_scope,
     filter_cells_pci_scope,
     filter_ecgis_pci_scope,
@@ -136,6 +137,8 @@ def greedy_allocate(
         for other in assigned:
             if other["ecgi"] == c["ecgi"]:
                 continue
+            if not cells_same_freq_band_for_pci(c, other):
+                continue
             other_pci = other.get("new_pci")
             if other_pci is None:
                 continue
@@ -159,8 +162,10 @@ def greedy_allocate(
             elif d_km < cell_same_pci_min_km:
                 forbidden.add(int(other_pci))
 
-        # 簇外小区也参与冲突检测(防跨簇PCI冲突)
+        # 簇外小区也参与冲突检测(防跨簇PCI冲突；仅同制式同频段)
         for other in external:
+            if not cells_same_freq_band_for_pci(c, other):
+                continue
             other_pci = other.get("new_pci") or other.get("pci")
             if other_pci is None:
                 continue
@@ -197,6 +202,8 @@ def greedy_allocate(
             for other in assigned:
                 if other["ecgi"] == c["ecgi"]:
                     continue
+                if not cells_same_freq_band_for_pci(c, other):
+                    continue
                 op = other.get("new_pci")
                 if op is None:
                     continue
@@ -208,6 +215,8 @@ def greedy_allocate(
                     continue
                 eval_neighbors.append((int(op), other, d))
             for other in external:
+                if not cells_same_freq_band_for_pci(c, other):
+                    continue
                 op = other.get("new_pci") or other.get("pci")
                 if op is None:
                     continue
@@ -309,38 +318,48 @@ def plan_global(
             group = [c for c in group if cell_freq_band_key(c) == fb_norm]
             if not group:
                 continue
-        # ── 同站多扇区预分配 (SSS 算法, 4G/5G 一致, 保证 N_ID(1) 共享) ──
-        from pci_sss_constraints import preassign_same_site_sss
-        sss_locked = preassign_same_site_sss(group, rat, reuse_distance_km=reuse_distance_km)
-        if sss_locked:
-            log.append(f"[粗规划] {rat}: SSS 预分配 {len(sss_locked)} 小区 (同站 N_ID(1) 共享)")
-        merged_locked = {**lk, **sss_locked}
+        # 按频段分桶：PCI 干扰仅同频（未指定全局频段过滤时）
+        band_buckets: Dict[str, List[Dict[str, Any]]] = {}
+        for c in group:
+            band_buckets.setdefault(cell_freq_band_key(c), []).append(c)
 
-        clusters = _geo_partition(group, cells_per_cluster=50)
-        log.append(f"[粗规划] {rat}: {len(group)}小区 -> {len(clusters)}簇")
-        for idx, cl in enumerate(clusters):
-            cluster_ecgis = {c["ecgi"] for c in cl}
-            # 冲突参考：全网同制式（+同频段若指定），不仅簇内
-            other_pool = [c for c in cells if c.get("rat") == rat and not is_nb_znh_cell(c)]
-            if fb_norm:
-                other_pool = [c for c in other_pool if cell_freq_band_key(c) == fb_norm]
-            other_cells = [c for c in other_pool if c["ecgi"] not in cluster_ecgis]
-            cluster_locked = {k: v for k, v in merged_locked.items() if k in cluster_ecgis}
-            cells_to_assign = [
-                c for c in cl
-                if c["ecgi"] not in sss_locked
-                and cell_matches_pci_scope(c, rat_filter, freq_band_filter)
-            ]
-            if not cells_to_assign:
+        for band_key, band_group in band_buckets.items():
+            if not band_group:
                 continue
-            greedy_allocate(
-                cells_to_assign, rat, _cell_pool(rat), bl, wl, cluster_locked,
-                external_cells=other_cells,
-                per_site_thresholds=per_site_thresholds,
-                check_mod30=check_mod30,
-                directional_filter=directional_filter,
-            )
-            log.append(f"  簇{idx+1}: {len(cells_to_assign)}小区 PCI分配完成")
+            # ── 同站多扇区预分配 (SSS 算法, 4G/5G 一致, 保证 N_ID(1) 共享) ──
+            from pci_sss_constraints import preassign_same_site_sss
+            sss_locked = preassign_same_site_sss(band_group, rat, reuse_distance_km=reuse_distance_km)
+            if sss_locked:
+                log.append(f"[粗规划] {rat}/{band_key}: SSS 预分配 {len(sss_locked)} 小区")
+            merged_locked = {**lk, **sss_locked}
+
+            clusters = _geo_partition(band_group, cells_per_cluster=50)
+            log.append(f"[粗规划] {rat}/{band_key}: {len(band_group)}小区 -> {len(clusters)}簇")
+            for idx, cl in enumerate(clusters):
+                cluster_ecgis = {c["ecgi"] for c in cl}
+                # 冲突参考：同制式 + 同频段
+                other_pool = [
+                    c for c in cells
+                    if c.get("rat") == rat and not is_nb_znh_cell(c)
+                    and cell_freq_band_key(c) == band_key
+                ]
+                other_cells = [c for c in other_pool if c["ecgi"] not in cluster_ecgis]
+                cluster_locked = {k: v for k, v in merged_locked.items() if k in cluster_ecgis}
+                cells_to_assign = [
+                    c for c in cl
+                    if c["ecgi"] not in sss_locked
+                    and cell_matches_pci_scope(c, rat_filter, freq_band_filter)
+                ]
+                if not cells_to_assign:
+                    continue
+                greedy_allocate(
+                    cells_to_assign, rat, _cell_pool(rat), bl, wl, cluster_locked,
+                    external_cells=other_cells,
+                    per_site_thresholds=per_site_thresholds,
+                    check_mod30=check_mod30,
+                    directional_filter=directional_filter,
+                )
+                log.append(f"  簇{idx+1}: {len(cells_to_assign)}小区 PCI分配完成")
 
     return {"cells": cells, "log": log}
 
@@ -419,10 +438,14 @@ def plan_partial(
         to_assign = [c for c in group if cell_matches_pci_scope(c, rat_filter, freq_band_filter)]
         if not to_assign:
             continue
+        ext_pool = [
+            c for c in cells
+            if c["ecgi"] not in targets and not is_nb_znh_cell(c)
+        ]
         greedy_allocate(
             to_assign, rat, _cell_pool(rat), bl, wl, locked,
             same_pci_min_km=max(radius_km, 30.0),
-            external_cells=[c for c in cells if c["ecgi"] not in targets and not is_nb_znh_cell(c)],
+            external_cells=ext_pool,
             per_site_thresholds=per_site_thresholds,
             check_mod30=check_mod30,
             directional_filter=directional_filter,
