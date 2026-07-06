@@ -22,6 +22,9 @@ data/plan.db
 工参/*.xls
 工参/*.csv
 
+# 许可签发密钥（勿提交；CI 从 Secret 生成）
+.license_key
+
 # PyInstaller
 build/
 dist/

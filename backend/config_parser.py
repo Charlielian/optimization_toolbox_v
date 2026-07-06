@@ -15,11 +15,35 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import openpyxl
 
-from config_imports import get_enabled_sheets, get_sheet_columns, is_sheet_enabled
+from config_imports import (
+    get_enabled_sheets,
+    get_sheet_columns,
+    is_sheet_enabled,
+    resolve_unique_key_columns,
+)
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["parse_config_excel", "parse_single_sheet"]
+__all__ = ["parse_config_excel", "parse_single_sheet", "apply_sheet_unique_keys"]
+
+
+def apply_sheet_unique_keys(
+    sheet_name: str,
+    column_map: Dict[str, str],
+    sheet_data: Dict[str, Any],
+) -> Dict[str, Any]:
+    """根据 config.yaml unique_keys 或 Excel 主键标记确定 pk_columns，并同步 columns[].is_pk"""
+    pk_columns, warnings = resolve_unique_key_columns(
+        sheet_name, column_map, sheet_data.get("pk_columns") or []
+    )
+    for w in warnings:
+        logger.warning(f"sheet '{sheet_name}': {w}")
+    sheet_data["pk_columns"] = pk_columns
+    sheet_data["unique_key_warnings"] = warnings
+    pk_set = set(pk_columns)
+    for col in sheet_data.get("columns") or []:
+        col["is_pk"] = col.get("name") in pk_set
+    return sheet_data
 
 
 def _parse_type_str(type_str: str) -> str:
@@ -311,6 +335,7 @@ def parse_config_excel(
                 result["stats"]["skipped_sheets"].append(f"{sheet_name}({sheet_data['error']})")
                 continue
 
+            apply_sheet_unique_keys(sheet_name, column_map, sheet_data)
             result["sheets"][sheet_name] = sheet_data
             result["stats"]["total_rows"] += sheet_data["row_count"]
 

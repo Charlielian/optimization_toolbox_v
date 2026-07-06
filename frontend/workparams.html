@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>工参导入 - 网优百宝箱</title>
+<title>工参管理 - 网优百宝箱</title>
 <link rel="icon" href="data:,">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -185,6 +185,29 @@
   .file-info .remove {
     color: #f56c6c; cursor: pointer; margin-left: 8px;
   }
+  .file-list {
+    margin-top: 8px;
+    max-height: 160px;
+    overflow-y: auto;
+  }
+  .file-list .file-info {
+    margin-top: 4px;
+  }
+  .file-list .file-info:first-child { margin-top: 0; }
+  .rat-tag {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 3px;
+    margin-right: 6px;
+    flex-shrink: 0;
+  }
+  .rat-tag.rat-4g { background: rgba(79, 195, 247, 0.2); color: #4fc3f7; }
+  .rat-tag.rat-5g { background: rgba(167, 139, 250, 0.2); color: #a78bfa; }
+  .rat-tag.rat-mixed { background: rgba(103, 194, 58, 0.15); color: #67c23a; }
+  .rat-tag.rat-unknown { background: rgba(158, 158, 158, 0.2); color: #888; }
+  .file-info .name { display: flex; align-items: center; min-width: 0; }
 
   /* 统计卡片 */
   .stats-grid {
@@ -477,6 +500,69 @@
   .checkbox-row input[type="checkbox"] {
     accent-color: #67c23a;
   }
+
+  .cell-form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px 12px;
+    margin-bottom: 14px;
+  }
+  .cell-form-grid .form-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .cell-form-grid .form-field.full {
+    grid-column: 1 / -1;
+  }
+  .cell-form-grid label {
+    font-size: 11px;
+    color: #aaa;
+  }
+  .cell-form-grid label .req { color: #f56c6c; }
+  .cell-form-grid input,
+  .cell-form-grid select {
+    height: 30px;
+    padding: 0 8px;
+    border: 1px solid #555;
+    border-radius: 4px;
+    font-size: 12px;
+    background: #1e1e1e;
+    color: #e0e0e0;
+    outline: none;
+  }
+  .cell-form-grid input:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 8px;
+    padding-top: 12px;
+    border-top: 1px solid #3a3a3a;
+  }
+  .toolbar-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  .data-table .col-actions {
+    white-space: nowrap;
+  }
+  .data-table .link-btn {
+    background: none;
+    border: none;
+    color: #67c23a;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0 6px;
+  }
+  .data-table .link-btn:hover { text-decoration: underline; }
+  .data-table .link-btn.danger { color: #f56c6c; }
 </style>
 </head>
 <body>
@@ -486,7 +572,7 @@
   <div class="back-btn" onclick="window.location.href='/'">
     <span>←</span> 返回首页
   </div>
-  <div class="page-title">工参导入</div>
+  <div class="page-title">工参管理</div>
   <div class="placeholder"></div>
 </div>
 
@@ -494,8 +580,8 @@
   <!-- 左侧操作面板 -->
   <div id="sidebar">
     <div id="sidebar-header">
-      <h2>工参导入</h2>
-      <p>4G/5G 工参数据管理</p>
+      <h2>工参管理</h2>
+      <p>导入、新增、编辑与删除 4G/5G 工参</p>
     </div>
     <div id="sidebar-body">
 
@@ -537,22 +623,20 @@
       <!-- 数据导入 -->
       <div class="section">
         <div class="section-title">1. 数据导入</div>
-        <input type="file" id="file-input" accept=".xlsx,.xls,.csv" style="display:none;" />
+        <input type="file" id="file-input" accept=".xlsx,.xls,.csv" multiple style="display:none;" />
         <div class="file-drop-zone" id="drop-zone">
           <div class="icon">📁</div>
-          <div class="text">点击或拖拽上传工参文件</div>
-          <div class="hint">支持 .xlsx / .xls / .csv 格式</div>
+          <div class="text">点击或拖拽上传工参（可多选）</div>
+          <div class="hint">支持多文件；自动识别 4G / 5G · .xlsx / .xls / .csv</div>
         </div>
-        <div id="file-info" style="display:none;">
-          <div class="file-info">
-            <span class="name" id="file-name"></span>
-            <span class="remove" id="file-remove">✕</span>
-          </div>
+        <div id="file-list" class="file-list" style="display:none;"></div>
+        <div style="margin-top: 6px;">
+          <button type="button" class="btn btn-small" id="file-clear-all" style="display:none;">清空已选</button>
         </div>
 
         <div class="checkbox-row" style="margin-top: 10px;">
           <input type="checkbox" id="append-mode" />
-          <label for="append-mode">追加模式（4G/5G 分次上传合并）</label>
+          <label for="append-mode">追加到现有工参（与库内数据按 ECGI 合并）</label>
         </div>
 
         <div class="btn-group" style="margin-top: 10px;">
@@ -608,6 +692,9 @@
 
     <!-- 小区列表 -->
     <div class="tab-content active" id="tab-cells">
+      <div class="toolbar-row">
+        <button class="btn btn-primary btn-small" id="btn-add-cell" type="button">+ 新增小区</button>
+      </div>
       <div class="search-bar">
         <select id="filter-rat">
           <option value="">全部制式</option>
@@ -643,6 +730,92 @@
         </div>
       </div>
     </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="cell-modal" style="display:none;">
+  <div class="modal" role="dialog" aria-labelledby="cell-modal-title">
+    <span class="close-btn" id="cell-modal-close" title="关闭">&times;</span>
+    <h3 id="cell-modal-title">新增小区</h3>
+    <form id="cell-form" autocomplete="off">
+      <div class="cell-form-grid">
+        <div class="form-field full">
+          <label>ECGI <span class="req">*</span></label>
+          <input type="text" id="cf-ecgi" name="ecgi" required placeholder="460-00-123456-1" />
+        </div>
+        <div class="form-field full">
+          <label>小区名称 <span class="req">*</span></label>
+          <input type="text" id="cf-name" name="name" required />
+        </div>
+        <div class="form-field">
+          <label>制式 <span class="req">*</span></label>
+          <select id="cf-rat" name="rat" required>
+            <option value="LTE">4G LTE</option>
+            <option value="NR">5G NR</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label>站型</label>
+          <select id="cf-site-type" name="site_type">
+            <option value="陆地">陆地</option>
+            <option value="室内">室内</option>
+            <option value="近海">近海</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label>经度 <span class="req">*</span></label>
+          <input type="number" step="any" id="cf-lon" name="lon" required />
+        </div>
+        <div class="form-field">
+          <label>纬度 <span class="req">*</span></label>
+          <input type="number" step="any" id="cf-lat" name="lat" required />
+        </div>
+        <div class="form-field">
+          <label>方位角</label>
+          <input type="number" step="any" id="cf-azimuth" name="azimuth" value="0" />
+        </div>
+        <div class="form-field">
+          <label>PCI</label>
+          <input type="number" id="cf-pci" name="pci" placeholder="空则记为缺失" />
+        </div>
+        <div class="form-field">
+          <label>频点</label>
+          <input type="number" id="cf-earfcn" name="earfcn" />
+        </div>
+        <div class="form-field">
+          <label>TAC</label>
+          <input type="number" id="cf-tac" name="tac" />
+        </div>
+        <div class="form-field">
+          <label>带宽</label>
+          <input type="number" step="any" id="cf-bandwidth" name="bandwidth" />
+        </div>
+        <div class="form-field">
+          <label>物理站</label>
+          <input type="text" id="cf-phy-name" name="phy_name" />
+        </div>
+        <div class="form-field">
+          <label>天线</label>
+          <input type="text" id="cf-ant-name" name="ant_name" />
+        </div>
+        <div class="form-field">
+          <label>厂家</label>
+          <input type="text" id="cf-manufacturer" name="manufacturer" />
+        </div>
+        <div class="form-field">
+          <label>归属网管</label>
+          <input type="text" id="cf-oms-name" name="oms_name" />
+        </div>
+        <div class="form-field full">
+          <label>频段描述</label>
+          <input type="text" id="cf-freq-band-raw" name="freq_band_raw" placeholder="如 n78、B3" />
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="cell-modal-cancel">取消</button>
+        <button type="submit" class="btn btn-primary" id="cell-modal-save">保存</button>
+      </div>
+    </form>
   </div>
 </div>
 

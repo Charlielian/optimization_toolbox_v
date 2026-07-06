@@ -11,11 +11,13 @@ from typing import Any, Dict, List
 
 import yaml
 
-__all__ = ["config", "load_config"]
+from app_paths import resolve_resource, runtime_root
 
-# 项目根目录
-ROOT_DIR = Path(__file__).parent.parent
-CONFIG_FILE = ROOT_DIR / "config.yaml"
+__all__ = ["config", "load_config", "ROOT_DIR"]
+
+# 项目根目录（exe 同目录或开发环境仓库根）
+ROOT_DIR = runtime_root()
+CONFIG_FILE = resolve_resource("config.yaml")
 
 
 def _default_config() -> Dict[str, Any]:
@@ -35,6 +37,10 @@ def _default_config() -> Dict[str, Any]:
         },
         "logging": {
             "level": "INFO",
+        },
+        "license": {
+            "enabled": True,
+            "file": "license.lic",
         },
     }
 
@@ -82,7 +88,7 @@ class Config:
     @property
     def frontend_dir(self) -> Path:
         sub = self._cfg.get("paths", {}).get("frontend_dir", "frontend")
-        return ROOT_DIR / sub
+        return resolve_resource(sub)
 
     @property
     def temp_dir(self) -> Path:
@@ -106,6 +112,18 @@ class Config:
     @property
     def log_level(self) -> str:
         return self._cfg.get("logging", {}).get("level", "INFO")
+
+    @property
+    def license_enabled(self) -> bool:
+        return bool(self._cfg.get("license", {}).get("enabled", True))
+
+    @property
+    def license_file(self) -> str:
+        return str(self._cfg.get("license", {}).get("file", "license.lic"))
+
+    @property
+    def raw(self) -> Dict[str, Any]:
+        return self._cfg
 
 
 config = Config(load_config())

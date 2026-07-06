@@ -20,6 +20,27 @@ const API = {
     return res.json();
   },
 
+  /** 多文件工参导入；服务端解析后自动识别各文件 4G/5G */
+  async uploadFiles(files, options = {}) {
+    const list = Array.from(files || []);
+    if (list.length === 0) throw new Error('未选择文件');
+    if (list.length === 1) {
+      return this.uploadFile(list[0], options);
+    }
+    const form = new FormData();
+    list.forEach((f) => form.append('files', f));
+    if (options.append) form.append('append', 'true');
+    const res = await fetch(this.base + '/api/upload/batch', {
+      method: 'POST',
+      body: form,
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error('批量上传失败: ' + err);
+    }
+    return res.json();
+  },
+
   async planAll(params) {
     const res = await fetch(this.base + '/api/plan/all', {
       method: 'POST',
@@ -32,6 +53,16 @@ const API = {
 
   async planPartial(params) {
     const res = await fetch(this.base + '/api/plan/partial', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async pciQuality(params = {}) {
+    const res = await fetch(this.base + '/api/pci/quality', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
@@ -74,6 +105,55 @@ const API = {
   async getCells() {
     const res = await fetch(this.base + '/api/cells');
     if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async _parseApiError(res) {
+    const text = await res.text();
+    try {
+      const j = JSON.parse(text);
+      if (j.errors && Array.isArray(j.errors)) {
+        return j.errors.join('; ');
+      }
+      if (j.detail) {
+        if (typeof j.detail === 'string') return j.detail;
+        if (typeof j.detail === 'object') {
+          if (j.detail.errors && Array.isArray(j.detail.errors)) {
+            return j.detail.errors.join('; ');
+          }
+          if (j.detail.detail) return String(j.detail.detail);
+        }
+      }
+      if (j.errors && Array.isArray(j.errors)) return j.errors.join('; ');
+    } catch (e) { /* ignore */ }
+    return text || res.statusText;
+  },
+
+  async createCell(payload) {
+    const res = await fetch(this.base + '/api/cells', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(await this._parseApiError(res));
+    return res.json();
+  },
+
+  async updateCell(ecgi, payload) {
+    const res = await fetch(this.base + '/api/cells/' + encodeURIComponent(ecgi), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(await this._parseApiError(res));
+    return res.json();
+  },
+
+  async deleteCell(ecgi) {
+    const res = await fetch(this.base + '/api/cells/' + encodeURIComponent(ecgi), {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error(await this._parseApiError(res));
     return res.json();
   },
 

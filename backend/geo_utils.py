@@ -276,3 +276,50 @@ def set_scene_mode(mode: str) -> None:
     global SCENE_MODE
     if mode in SCENE_PRESETS:
         SCENE_MODE = mode
+
+
+def point_in_polygon(lat: float, lon: float, ring: List[List[float]]) -> bool:
+    """
+    射线法判断点是否在闭合多边形内。
+    ring: [[lat, lon], ...] 至少 3 个顶点。
+    """
+    n = len(ring)
+    if n < 3:
+        return False
+    inside = False
+    j = n - 1
+    for i in range(n):
+        lat_i, lon_i = float(ring[i][0]), float(ring[i][1])
+        lat_j, lon_j = float(ring[j][0]), float(ring[j][1])
+        if ((lat_i > lat) != (lat_j > lat)) and (
+            lon < (lon_j - lon_i) * (lat - lat_i) / (lat_j - lat_i + 1e-15) + lon_i
+        ):
+            inside = not inside
+        j = i
+    return inside
+
+
+def point_in_area(lat: float, lon: float, area: Optional[Dict[str, Any]]) -> bool:
+    """
+    判断 (lat, lon) 是否落在前端圈选区域内。
+    area: rect | circle | polygon
+      polygon: {type:'polygon', points:[[lat,lon],...]}
+    """
+    if not area:
+        return True
+    t = area.get("type")
+    if t == "rect":
+        if area.get("lat1") is None or area.get("lat2") is None:
+            return True
+        la1, la2 = min(area["lat1"], area["lat2"]), max(area["lat1"], area["lat2"])
+        lo1, lo2 = min(area["lon1"], area["lon2"]), max(area["lon1"], area["lon2"])
+        return la1 <= lat <= la2 and lo1 <= lon <= lo2
+    if t == "circle":
+        if area.get("radius_km") is None:
+            return True
+        lat0, lon0 = float(area["lat"]), float(area["lon"])
+        return haversine_distance(lat, lon, lat0, lon0) / 1000.0 <= float(area["radius_km"])
+    if t == "polygon":
+        pts = area.get("points") or []
+        return point_in_polygon(lat, lon, pts)
+    return True

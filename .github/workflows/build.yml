@@ -1,0 +1,86 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Issue license for bundle
+        env:
+          WYBX_LICENSE_HMAC_KEY: ${{ secrets.WYBX_LICENSE_HMAC_KEY }}
+        run: |
+          if "%WYBX_LICENSE_HMAC_KEY%"=="" (
+            echo "::warning::未配置 WYBX_LICENSE_HMAC_KEY，使用默认开发密钥签发 license（仅适合内测）。"
+            python scripts/issue_license.py --expires 2027-12-31 --out license.lic
+          ) else (
+            echo %WYBX_LICENSE_HMAC_KEY%> .license_key
+            python scripts/issue_license.py --expires 2027-12-31 --out license.lic
+          )
+
+      - name: Build EXE with PyInstaller (onedir)
+        run: |
+          pyinstaller `
+            --onedir `
+            --name "网优百宝箱" `
+            --paths "backend" `
+            run.py
+
+      - name: Copy data files to output directory
+        run: |
+          Copy-Item -Recurse frontend dist\网优百宝箱\
+          if (Test-Path static) { Copy-Item -Recurse static dist\网优百宝箱\ }
+          Copy-Item config.yaml dist\网优百宝箱\
+          Copy-Item license.lic dist\网优百宝箱\
+          if (Test-Path .license_key) { Copy-Item .license_key dist\网优百宝箱\ }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 网优百宝箱-windows
+          path: dist/网优百宝箱/
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: 网优百宝箱-windows
+          path: ./网优百宝箱
+
+      - name: Zip release package
+        run: zip -r 网优百宝箱.zip 网优百宝箱
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: Release v${{ github.run_number }}
+          files: 网优百宝箱.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

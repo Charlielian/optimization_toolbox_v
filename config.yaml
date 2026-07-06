@@ -1,6 +1,15 @@
 server:
   host: 0.0.0.0
   port: 4001
+license:
+  enabled: true
+  file: license.lic
+  clock_guard:
+    state_file: data/.license_clock
+    allow_rollback_days: 1
+    use_network_time: true
+    max_local_drift_days: 2
+    network_timeout_sec: 2.5
 paths:
   frontend_dir: frontend
   temp_dir: temp
@@ -15,10 +24,15 @@ logging:
   level: INFO
 import_configs:
   config_dir: 网管文件
+  # 各 sheet 可设 unique_keys（数据库列名，须出现在 columns 映射值中）：
+  # 导入时按唯一键 INSERT OR REPLACE；未配置则使用 Excel 第5行 Primary Key 标记
   sheets:
     NRCellDU:
       enabled: true
       description: 5G小区配置
+      unique_keys:
+        - me_id
+        - cell_local_id
       columns:
         ManagedElement: me_id
         NE_Name: ne_name

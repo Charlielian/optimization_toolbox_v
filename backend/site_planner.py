@@ -17,6 +17,7 @@ from data_parser import parse_work_params
 from geo_utils import mutual_back_facing, vincenty_distance
 from nbr_planner import plan_neighbors
 from pci_planner import plan_all as legacy_plan_all, greedy_allocate, _cell_pool
+from pci_scope import cells_same_freq_band_for_pci
 from pci_rsi_planner import pci_rsi_plan
 from sector_params import enrich_cell_with_sector
 from site_type_ext import (
@@ -158,6 +159,7 @@ def _run_pci_planning(
         _existing_beamwidth[c["ecgi"]] = c.get("beamwidth", c.get("beam"))
 
     new_cells = [cells[i] for i in (target_indices or planned_indices)]
+    ecgi_index: Dict[str, Dict[str, Any]] = {c.get("ecgi"): c for c in cells if c.get("ecgi")}
     rat = new_cells[0].get("rat", "LTE") if new_cells else "LTE"
     pool = _cell_pool(rat)
     pool_set = set(pool)
@@ -182,6 +184,9 @@ def _run_pci_planning(
         # 已有小区
         for ecgi, (p, other_lat, other_lon) in existing_pci.items():
             if ecgi == exclude_ecgi or int(p) != pci:
+                continue
+            ex_cell = ecgi_index.get(ecgi)
+            if ex_cell and not cells_same_freq_band_for_pci(target, ex_cell):
                 continue
             if other_lat is None or other_lon is None:
                 continue
@@ -220,8 +225,6 @@ def _run_pci_planning(
     # ── 同站已规划小区：本批次 new_cells 之外的、与 new_cells 同 site_name ──
     # 这些小区可能是之前几次单站规划累积下来的 "PLAN_宏站" 兄弟扇区,它们必须共享 nid1
     # (硬性 SSS 校验按 site_name 分桶),因此本次规划必须强制沿用它们的 nid1 + 已用 mod3 槽位
-    # 索引: ecgi -> cell (O(1) 查找, 避免在大网下 O(N²) 扫描)
-    ecgi_index: Dict[str, Dict[str, Any]] = {c.get("ecgi"): c for c in cells if c.get("ecgi")}
     same_site_existing: Dict[Tuple[float, float], List[Tuple[int, int]]] = defaultdict(list)
     # 记录"同 site_name"的 ecgi,后续用于同 site_name 桶的 nid1 强制沿用
     same_site_name_existing: Dict[str, List[Tuple[int, int]]] = defaultdict(list)
@@ -268,8 +271,12 @@ def _run_pci_planning(
         )
         nearby_radius = max(reuse_distance_km, _eval_for_radius.same_pci_min_km)
         nearby_pcis: List[Tuple[int, float]] = []
+        ref_cell = s_cells[0]
         for ecgi2, (p, olat, olon) in existing_pci.items():
             if olat is None or olon is None or p is None or p < 0:
+                continue
+            ex_cell = ecgi_index.get(ecgi2)
+            if ex_cell and not cells_same_freq_band_for_pci(ref_cell, ex_cell):
                 continue
             try:
                 d = vincenty_distance(site_lat, site_lon, olat, olon) / 1000.0
@@ -430,6 +437,9 @@ def _run_pci_planning(
             for ecgi_ex, (p, olat, olon) in existing_pci.items():
                 if p is None or int(p) < 0 or olat is None or olon is None:
                     continue
+                ex_cell = ecgi_index.get(ecgi_ex)
+                if ex_cell and not cells_same_freq_band_for_pci(c, ex_cell):
+                    continue
                 try:
                     d = vincenty_distance(c["lat"], c["lon"], olat, olon) / 1000.0
                 except Exception:
@@ -507,14 +517,19 @@ def _run_pci_planning(
         for ecgi, (p, other_lat, other_lon) in existing_pci.items():
             if other_lat is None or other_lon is None:
                 continue
+            ex_cell = ecgi_index.get(ecgi)
+            if ex_cell and not cells_same_freq_band_for_pci(c, ex_cell):
+                continue
             d_km = vincenty_distance(c["lat"], c["lon"], other_lat, other_lon) / 1000.0
             if d_km >= cell_safe_km and d_km >= 3.0 and d_km >= same_pci_min_km:
                 continue
             # 方向性豁免: 双向背向则跳过 (跨站才有意义; 同站 cell_safe_km 通常 < safe 距离)
             if directional_filter and d_km >= cell_safe_km:
-                other_cell = {"lat": other_lat, "lon": other_lon,
-                               "azimuth": _existing_azimuth.get(ecgi),
-                               "beamwidth": _existing_beamwidth.get(ecgi)}
+                other_cell = ex_cell if ex_cell else {
+                    "lat": other_lat, "lon": other_lon,
+                    "azimuth": _existing_azimuth.get(ecgi),
+                    "beamwidth": _existing_beamwidth.get(ecgi),
+                }
                 if other_cell["azimuth"] is not None and mutual_back_facing(c, other_cell):
                     continue
             if d_km < cell_safe_km:

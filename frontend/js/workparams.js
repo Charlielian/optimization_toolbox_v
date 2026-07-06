@@ -1,28 +1,53 @@
-// 工参导入页面逻辑
+// 工参管理页面逻辑（导入 + 增删改）
 (function () {
   'use strict';
 
-  let currentFile = null;
+  /** @type {File[]} */
+  let currentFiles = [];
   let currentCells = [];
   let currentStats = {};
   let currentPage = 1;
   const pageSize = 50;
   let importHistory = [];
+  let cellModalMode = 'create'; // create | edit
+  let editingEcgi = null;
+
+  const SYNC_BC = typeof BroadcastChannel !== 'undefined'
+    ? new BroadcastChannel('wybb-cells-sync')
+    : null;
+
+  function onExternalCellsSync(source) {
+    log(`检测到网管基础数据已同步（${source}），正在刷新工参列表…`, 'success');
+    loadStats();
+    loadCells();
+  }
 
   // 初始化
   document.addEventListener('DOMContentLoaded', function () {
     initFileUpload();
     initTabs();
+    initCellModal();
     loadStats();
     loadCells();
+
+    if (SYNC_BC) {
+      SYNC_BC.onmessage = (ev) => {
+        if (ev.data && ev.data.type === 'cells-sync-done') {
+          onExternalCellsSync('网管数据页');
+        }
+      };
+    }
+    window.addEventListener('storage', (ev) => {
+      if (ev.key === 'wybb_cells_sync_at' && ev.newValue) {
+        onExternalCellsSync('其他标签页');
+      }
+    });
   });
 
   // ========== 文件上传 ==========
   function initFileUpload() {
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('file-input');
-    const fileRemove = document.getElementById('file-remove');
-
     dropZone.addEventListener('click', () => fileInput.click());
 
     dropZone.addEventListener('dragover', (e) => {
@@ -36,27 +61,37 @@
       e.preventDefault();
       dropZone.classList.remove('drag-over');
       if (e.dataTransfer.files.length) {
-        handleFile(e.dataTransfer.files[0]);
+        addFiles(e.dataTransfer.files);
       }
     });
 
     fileInput.addEventListener('change', (e) => {
       if (e.target.files.length) {
-        handleFile(e.target.files[0]);
+        addFiles(e.target.files);
+        fileInput.value = '';
       }
     });
 
-    fileRemove.addEventListener('click', () => {
-      currentFile = null;
-      fileInput.value = '';
-      document.getElementById('file-info').style.display = 'none';
-      document.getElementById('import-result').style.display = 'none';
+    document.getElementById('file-clear-all').addEventListener('click', () => {
+      clearSelectedFiles();
+    });
+
+    document.getElementById('file-list').addEventListener('click', (e) => {
+      const rm = e.target.closest('[data-remove-index]');
+      if (!rm) return;
+      const idx = parseInt(rm.dataset.removeIndex, 10);
+      if (!Number.isFinite(idx)) return;
+      currentFiles.splice(idx, 1);
+      renderFileList();
+      if (currentFiles.length === 0) {
+        document.getElementById('import-result').style.display = 'none';
+      }
       log('已移除文件', 'info');
     });
 
     // 导入按钮
     document.getElementById('btn-upload').addEventListener('click', () => {
-      if (!currentFile) {
+      if (currentFiles.length === 0) {
         fileInput.click();
       } else {
         doUpload();
@@ -115,22 +150,233 @@
       renderCellsTable();
     });
     document.getElementById('btn-refresh-cells').addEventListener('click', loadCells);
+
+    document.getElementById('btn-add-cell').addEventListener('click', () => openCellModal('create'));
   }
 
-  function handleFile(file) {
-    if (!file.name.match(/\.(xlsx|xls|csv)$/i)) {
-      log('请上传 Excel 或 CSV 文件', 'error');
+  function initCellModal() {
+    const overlay = document.getElementById('cell-modal');
+    const close = () => {
+      overlay.style.display = 'none';
+      editingEcgi = null;
+    };
+    document.getElementById('cell-modal-close').addEventListener('click', close);
+    document.getElementById('cell-modal-cancel').addEventListener('click', close);
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) close();
+    });
+
+    document.getElementById('cell-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      submitCellForm();
+    });
+  }
+
+  function openCellModal(mode, row) {
+    cellModalMode = mode;
+    editingEcgi = mode === 'edit' && row ? row.ecgi : null;
+    const title = document.getElementById('cell-modal-title');
+    const ecgiInput = document.getElementById('cf-ecgi');
+    title.textContent = mode === 'edit' ? '编辑小区' : '新增小区';
+    ecgiInput.disabled = mode === 'edit';
+
+    const setVal = (id, v) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (v == null || v === '') {
+        el.value = '';
+      } else {
+        el.value = v;
+      }
+    };
+
+    if (mode === 'edit' && row) {
+      setVal('cf-ecgi', row.ecgi);
+      setVal('cf-name', row.name);
+      setVal('cf-rat', row.rat || 'LTE');
+      setVal('cf-site-type', row.site_type || '陆地');
+      setVal('cf-lon', row.lon);
+      setVal('cf-lat', row.lat);
+      setVal('cf-azimuth', row.azimuth != null ? row.azimuth : 0);
+      setVal('cf-pci', row.pci != null && row.pci >= 0 ? row.pci : '');
+      setVal('cf-earfcn', row.earfcn);
+      setVal('cf-tac', row.tac);
+      setVal('cf-bandwidth', row.bandwidth);
+      setVal('cf-phy-name', row.phy_name);
+      setVal('cf-ant-name', row.ant_name);
+      setVal('cf-manufacturer', row.manufacturer);
+      setVal('cf-oms-name', row.oms_name);
+      setVal('cf-freq-band-raw', row.freq_band_label || row.freq_band || '');
+    } else {
+      document.getElementById('cell-form').reset();
+      document.getElementById('cf-rat').value = 'LTE';
+      document.getElementById('cf-site-type').value = '陆地';
+      document.getElementById('cf-azimuth').value = '0';
+      ecgiInput.disabled = false;
+    }
+
+    document.getElementById('cell-modal').style.display = 'flex';
+  }
+
+  function readCellFormPayload() {
+    const numOrNull = (id) => {
+      const v = document.getElementById(id).value.trim();
+      if (v === '') return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const strOrNull = (id) => {
+      const v = document.getElementById(id).value.trim();
+      return v === '' ? null : v;
+    };
+
+    const payload = {
+      ecgi: document.getElementById('cf-ecgi').value.trim(),
+      name: document.getElementById('cf-name').value.trim(),
+      rat: document.getElementById('cf-rat').value,
+      site_type: document.getElementById('cf-site-type').value,
+      lon: numOrNull('cf-lon'),
+      lat: numOrNull('cf-lat'),
+      azimuth: numOrNull('cf-azimuth') ?? 0,
+      pci: numOrNull('cf-pci'),
+      earfcn: numOrNull('cf-earfcn'),
+      tac: numOrNull('cf-tac'),
+      bandwidth: numOrNull('cf-bandwidth'),
+      phy_name: strOrNull('cf-phy-name'),
+      ant_name: strOrNull('cf-ant-name'),
+      manufacturer: strOrNull('cf-manufacturer'),
+      oms_name: strOrNull('cf-oms-name'),
+      freq_band_raw: strOrNull('cf-freq-band-raw'),
+    };
+    return payload;
+  }
+
+  async function submitCellForm() {
+    const saveBtn = document.getElementById('cell-modal-save');
+    const payload = readCellFormPayload();
+    if (!payload.name || payload.lon == null || payload.lat == null) {
+      log('请填写必填项：小区名称、经纬度', 'warn');
       return;
     }
-    currentFile = file;
-    document.getElementById('file-name').textContent = file.name;
-    document.getElementById('file-info').style.display = 'block';
-    document.getElementById('btn-upload').textContent = '开始导入';
-    log(`已选择文件: ${file.name} (${formatSize(file.size)})`, 'info');
+    if (cellModalMode === 'create' && !payload.ecgi) {
+      log('请填写 ECGI', 'warn');
+      return;
+    }
+
+    saveBtn.disabled = true;
+    saveBtn.classList.add('btn-loading');
+    try {
+      if (cellModalMode === 'edit' && editingEcgi) {
+        const { ecgi, ...updates } = payload;
+        await API.updateCell(editingEcgi, updates);
+        log(`已更新小区: ${editingEcgi}`, 'success');
+      } else {
+        await API.createCell(payload);
+        log(`已新增小区: ${payload.ecgi}`, 'success');
+      }
+      document.getElementById('cell-modal').style.display = 'none';
+      editingEcgi = null;
+      await loadCells();
+    } catch (err) {
+      log((cellModalMode === 'edit' ? '更新失败: ' : '新增失败: ') + err.message, 'error');
+    } finally {
+      saveBtn.disabled = false;
+      saveBtn.classList.remove('btn-loading');
+    }
+  }
+
+  async function deleteCellRow(row) {
+    const label = row.name || row.ecgi;
+    if (!confirm(`确定删除小区「${label}」？\nECGI: ${row.ecgi}\n删除后不可恢复。`)) return;
+    try {
+      await API.deleteCell(row.ecgi);
+      log(`已删除: ${label}`, 'success');
+      await loadCells();
+    } catch (e) {
+      log('删除失败: ' + e.message, 'error');
+    }
+  }
+
+  function guessRatFromFilename(name) {
+    const fn = (name || '').toLowerCase();
+    if (/5g|nr|gnodeb|gnb/.test(fn) && !/4g|lte/.test(fn)) return { kind: '5G', label: '5G（文件名）' };
+    if (/4g|lte|enodeb|eutran/.test(fn) && !/5g|nr/.test(fn)) return { kind: '4G', label: '4G（文件名）' };
+    if (/5g|nr/.test(fn) && /4g|lte/.test(fn)) return { kind: 'mixed', label: '4G+5G（文件名）' };
+    return { kind: 'unknown', label: '待识别' };
+  }
+
+  function ratTagClass(kind) {
+    if (kind === '4G') return 'rat-4g';
+    if (kind === '5G') return 'rat-5g';
+    if (kind === 'mixed') return 'rat-mixed';
+    return 'rat-unknown';
+  }
+
+  function addFiles(fileList) {
+    const added = [];
+    for (const file of fileList) {
+      if (!file.name.match(/\.(xlsx|xls|csv)$/i)) {
+        log(`已跳过非工参文件: ${file.name}`, 'warn');
+        continue;
+      }
+      const dup = currentFiles.some(
+        (f) => f.name === file.name && f.size === file.size && f.lastModified === file.lastModified
+      );
+      if (dup) continue;
+      currentFiles.push(file);
+      added.push(file);
+    }
+    if (added.length === 0 && fileList.length > 0) {
+      log('没有可添加的新文件', 'warn');
+      return;
+    }
+    renderFileList();
+    const names = added.map((f) => f.name).join(', ');
+    log(`已选择 ${currentFiles.length} 个文件${names ? ': ' + names : ''}`, 'info');
+  }
+
+  function clearSelectedFiles() {
+    currentFiles = [];
+    document.getElementById('file-input').value = '';
+    renderFileList();
+    document.getElementById('import-result').style.display = 'none';
+    log('已清空待导入文件', 'info');
+  }
+
+  function renderFileList() {
+    const listEl = document.getElementById('file-list');
+    const clearBtn = document.getElementById('file-clear-all');
+    const uploadBtn = document.getElementById('btn-upload');
+    if (currentFiles.length === 0) {
+      listEl.style.display = 'none';
+      listEl.innerHTML = '';
+      clearBtn.style.display = 'none';
+      uploadBtn.textContent = '开始导入';
+      return;
+    }
+    listEl.style.display = 'block';
+    clearBtn.style.display = 'inline-block';
+    uploadBtn.textContent = currentFiles.length > 1
+      ? `开始导入 (${currentFiles.length} 个文件)`
+      : '开始导入';
+
+    let html = '';
+    currentFiles.forEach((file, i) => {
+      const g = guessRatFromFilename(file.name);
+      html += `<div class="file-info">` +
+        `<span class="name">` +
+        `<span class="rat-tag ${ratTagClass(g.kind)}">${escapeAttr(g.label)}</span>` +
+        `<span style="overflow:hidden;text-overflow:ellipsis;">${escapeAttr(file.name)}</span>` +
+        `<span style="color:#666;margin-left:6px;flex-shrink:0;">${formatSize(file.size)}</span>` +
+        `</span>` +
+        `<span class="remove" data-remove-index="${i}" title="移除">✕</span>` +
+        `</div>`;
+    });
+    listEl.innerHTML = html;
   }
 
   function doUpload() {
-    if (!currentFile) {
+    if (currentFiles.length === 0) {
       log('请先选择文件', 'warn');
       return;
     }
@@ -139,20 +385,45 @@
     btn.classList.add('btn-loading');
     btn.disabled = true;
 
-    log(`开始导入: ${currentFile.name} (模式: ${append ? '追加' : '替换'})`, 'info');
+    const modeLabel = append ? '追加' : '替换';
+    log(
+      `开始导入 ${currentFiles.length} 个文件 (模式: ${modeLabel})`,
+      'info'
+    );
 
-    API.uploadFile(currentFile, { append }).then(r => {
+    API.uploadFiles(currentFiles, { append }).then(r => {
       currentStats = r.stats;
       renderImportResult(r, append);
       updateStats();
       loadCells();
-      log(append
-        ? `追加完成: 新增/更新 ${r.added} 条, 当前共 ${r.total_after} 小区`
-        : `导入完成: 有效${r.stats.valid}条, 异常${r.stats.invalid}条`,
-        r.stats.invalid > 0 ? 'warn' : 'success');
-      if (r.invalid_rows && r.invalid_rows.length > 0) {
-        log(`异常行号: ${r.invalid_rows.map(x => x.row).join(', ')}`, 'warn');
+      if (r.files && r.files.length > 1) {
+        r.files.forEach((f) => {
+          if (!f.success) {
+            log(`${f.filename}: 失败 — ${f.error || '未知错误'}`, 'error');
+            return;
+          }
+          const p = f.rat_profile || {};
+          log(
+            `${f.filename} → ${p.label || '已识别'} (有效 ${(f.stats && f.stats.valid) || 0} 条)`,
+            'success'
+          );
+        });
       }
+      const totalValid = r.stats?.valid ?? r.cells_count ?? 0;
+      const invalid = r.stats?.invalid ?? 0;
+      if (append && r.total_after != null) {
+        log(`导入完成: 当前共 ${r.total_after} 小区`, invalid > 0 ? 'warn' : 'success');
+      } else {
+        log(`导入完成: 有效 ${totalValid} 条, 异常 ${invalid} 条`, invalid > 0 ? 'warn' : 'success');
+      }
+      if (r.invalid_rows && r.invalid_rows.length > 0) {
+        const rows = r.invalid_rows.slice(0, 20).map((x) => {
+          const src = x.source_file ? `${x.source_file}:` : '';
+          return src + x.row;
+        });
+        log(`异常行: ${rows.join(', ')}${r.invalid_rows.length > 20 ? ' …' : ''}`, 'warn');
+      }
+      clearSelectedFiles();
     }).catch(err => {
       log('导入失败: ' + err.message, 'error');
     }).finally(() => {
@@ -167,14 +438,35 @@
     resultDiv.style.display = 'block';
 
     let html = '<div style="font-weight:600; color:#e0e0e0; margin-bottom:8px;">导入结果</div>';
-    html += `<div class="result-item success"><span class="label">有效记录</span><span class="value">${r.stats.valid} 条</span></div>`;
+
+    if (r.files && r.files.length > 0) {
+      html += '<div style="font-size:11px;color:#888;margin-bottom:8px;">各文件识别</div>';
+      r.files.forEach((f) => {
+        const p = f.rat_profile || {};
+        const tagClass = ratTagClass(p.kind || 'unknown');
+        if (f.success) {
+          html += `<div class="result-item success">` +
+            `<span class="label"><span class="rat-tag ${tagClass}">${escapeAttr(p.label || '—')}</span>${escapeAttr(f.filename)}</span>` +
+            `<span class="value">有效 ${(f.stats && f.stats.valid) || 0}</span></div>`;
+        } else {
+          html += `<div class="result-item error">` +
+            `<span class="label">${escapeAttr(f.filename)}</span>` +
+            `<span class="value">${escapeAttr(f.error || '失败')}</span></div>`;
+        }
+      });
+      html += '<div style="border-top:1px solid #3a3a3a;margin:8px 0;"></div>';
+    }
+
+    html += `<div class="result-item success"><span class="label">合计有效</span><span class="value">${r.stats.valid} 条</span></div>`;
     if (r.stats.invalid > 0) {
       html += `<div class="result-item warn"><span class="label">异常记录</span><span class="value">${r.stats.invalid} 条</span></div>`;
     }
     html += `<div class="result-item"><span class="label">4G LTE</span><span class="value">${r.stats.rat_counts?.LTE || 0} 条</span></div>`;
     html += `<div class="result-item"><span class="label">5G NR</span><span class="value">${r.stats.rat_counts?.NR || 0} 条</span></div>`;
-    if (append) {
+    if (append && r.total_after != null) {
       html += `<div class="result-item success"><span class="label">当前总计</span><span class="value">${r.total_after} 条</span></div>`;
+    } else if (r.cells_count != null) {
+      html += `<div class="result-item success"><span class="label">入库小区</span><span class="value">${r.cells_count} 条</span></div>`;
     }
     panel.innerHTML = html;
   }
@@ -184,9 +476,8 @@
     try {
       const blob = await API.downloadSample();
       const file = new File([blob], 'sample_cells.xlsx');
-      currentFile = file;
-      document.getElementById('file-name').textContent = file.name;
-      document.getElementById('file-info').style.display = 'block';
+      currentFiles = [file];
+      renderFileList();
       doUpload();
     } catch (e) {
       log('加载示例失败: ' + e.message, 'error');
@@ -333,12 +624,13 @@
     columns.forEach(col => {
       html += `<th>${col.label}</th>`;
     });
+    html += '<th class="col-actions" style="width:100px;">操作</th>';
     html += '</tr></thead><tbody>';
 
     pageData.forEach((row, i) => {
       const synced = !!row.pci_synced_at;
       const rowClass = synced ? 'synced-row' : '';
-      html += `<tr class="${rowClass}">`;
+      html += `<tr class="${rowClass}" data-ecgi="${escapeAttr(row.ecgi || '')}">`;
       html += `<td>${start + i + 1}</td>`;
       columns.forEach(col => {
         if (col.key === 'sync_status') {
@@ -365,10 +657,29 @@
         }
         html += `<td title="${val != null ? val : ''}">${display}</td>`;
       });
+      html += `<td class="col-actions">` +
+        `<button type="button" class="link-btn" data-action="edit">编辑</button>` +
+        `<button type="button" class="link-btn danger" data-action="delete">删除</button>` +
+        `</td>`;
       html += '</tr>';
     });
     html += '</tbody></table>';
     container.innerHTML = html;
+
+    container.onclick = (e) => {
+      const btn = e.target.closest('[data-action]');
+      if (!btn) return;
+      const tr = btn.closest('tr');
+      const ecgi = tr && tr.dataset.ecgi;
+      if (!ecgi) return;
+      const row = currentCells.find((c) => c.ecgi === ecgi);
+      if (!row) return;
+      if (btn.dataset.action === 'edit') {
+        openCellModal('edit', row);
+      } else if (btn.dataset.action === 'delete') {
+        deleteCellRow(row);
+      }
+    };
 
     renderPagination(filtered.length, totalPages);
   }

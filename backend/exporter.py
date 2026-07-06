@@ -9,9 +9,16 @@ from __future__ import annotations
 
 import io
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import pandas as pd
+
+from conflict_check import collect_conflicts
+from pci_quality_report import (
+    build_pci_quality_report,
+    pci_quality_export_columns,
+    pci_quality_interference_detail_rows,
+)
 
 # 华为LTE邻区关系MML模板
 HUAWEI_LTE_MML_TEMPLATE = """ADD NRCELLEUTRANCELLRELATIONSHIP: NRCellId={cell_id}, EUTRANCellId={nbr_id}, isRemoveNoHOAllowed=0, RemoveAllowed=0, ncellIndividualOffset=dB0;
@@ -120,11 +127,51 @@ def _neighbor_relation_row(
     return {**base, **dst_extra, **metrics}
 
 
-def export_workparams(cells: List[Dict[str, Any]]) -> bytes:
+def _quality_by_ecgi_for_export(
+    cells: List[Dict[str, Any]],
+    ecgi_filter: Optional[Set[str]] = None,
+    *,
+    check_mod30: bool = True,
+    directional_filter: bool = True,
+    export_interference_radius_km: float = 5.0,
+) -> Dict[str, Dict[str, Any]]:
+    """导出前生成/合并 PCI 质量（优先 cell 上已有完整 pci_quality）。"""
+    conflicts = collect_conflicts(cells, use_original_pci=False, directional_filter=directional_filter)
+    report = build_pci_quality_report(
+        cells,
+        conflicts,
+        ecgi_filter=ecgi_filter,
+        check_mod30=check_mod30,
+        directional_filter=directional_filter,
+        max_cells=50000 if ecgi_filter else 5000,
+        export_interference_radius_km=export_interference_radius_km,
+    )
+    by_ecgi = {r["ecgi"]: r for r in report.get("cells", []) if r.get("ecgi")}
+    for c in cells:
+        e = c.get("ecgi")
+        if not e:
+            continue
+        pq = c.get("pci_quality")
+        if isinstance(pq, dict) and pq.get("score_explain"):
+            by_ecgi[e] = pq
+        elif isinstance(pq, dict) and e not in by_ecgi:
+            by_ecgi[e] = pq
+    return by_ecgi
+
+
+def export_workparams(
+    cells: List[Dict[str, Any]],
+    *,
+    check_mod30: bool = True,
+    directional_filter: bool = True,
+) -> bytes:
     """
     导出规划后工参表
-    字段: 原字段 + 新PCI + 邻区数量 + 邻区ECGI列表
+    字段: 原字段 + 新PCI + PCI质量说明 + 邻区数量 + 邻区ECGI列表
     """
+    quality_by = _quality_by_ecgi_for_export(
+        cells, None, check_mod30=check_mod30, directional_filter=directional_filter,
+    )
     rows = []
     for c in cells:
         row = {
@@ -146,6 +193,7 @@ def export_workparams(cells: List[Dict[str, Any]]) -> bytes:
             "站点类型": c.get("site_type", "陆地"),
             "备注": "PCI变更" if c.get("pci") != c.get("new_pci") else "",
         }
+        row.update(pci_quality_export_columns(quality_by.get(c.get("ecgi"))))
         rows.append(row)
     df = pd.DataFrame(rows)
     buf = io.BytesIO()
@@ -280,6 +328,9 @@ def export_plan_split_sheets(
     cells: List[Dict[str, Any]],
     planned_ecgis: List[str],
     nbr_plan_types: Optional[List[str]] = None,
+    *,
+    check_mod30: bool = True,
+    directional_filter: bool = True,
 ) -> bytes:
     """
     导出单/批量规划结果 (多 sheet xlsx)
@@ -294,6 +345,12 @@ def export_plan_split_sheets(
     planned_set = set(planned_ecgis)
     planned_cells = [c for c in cells if c.get("ecgi") in planned_set]
     ecgi_idx = _ecgi_index(cells)
+    quality_by = _quality_by_ecgi_for_export(
+        cells,
+        planned_set if planned_set else None,
+        check_mod30=check_mod30,
+        directional_filter=directional_filter,
+    )
 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
@@ -342,11 +399,20 @@ def export_plan_split_sheets(
                     row[f"候选组{i+1}_得分"] = ""
                     row[f"候选组{i+1}_PCI"] = ""
                     row[f"候选组{i+1}_当前"] = ""
+            row.update(pci_quality_export_columns(quality_by.get(c.get("ecgi"))))
             rows.append(row)
         if rows:
             pd.DataFrame(rows).to_excel(writer, sheet_name="PCI规划表", index=False)
         else:
             pd.DataFrame({"说明": ["无规划小区"]}).to_excel(writer, sheet_name="PCI规划表", index=False)
+
+        detail_rows = pci_quality_interference_detail_rows(
+            planned_cells, quality_by, ecgi_idx,
+        )
+        if detail_rows:
+            pd.DataFrame(detail_rows).to_excel(writer, sheet_name="PCI干扰明细", index=False)
+        else:
+            pd.DataFrame({"说明": ["无 PCI 干扰明细"]}).to_excel(writer, sheet_name="PCI干扰明细", index=False)
 
         # Sheet 2..N: 邻区-<类型>
         for nbr_type in nbr_plan_types:

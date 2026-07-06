@@ -18,10 +18,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from app_paths import runtime_root
 from sector_params import enrich_cell_with_sector
 
-# 数据库文件位于项目根目录 data/plan.db
-ROOT_DIR = Path(__file__).parent.parent
+# 数据库文件位于运行时根目录 data/plan.db（exe 同目录）
+ROOT_DIR = runtime_root()
 DATA_DIR = ROOT_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "plan.db"
@@ -355,22 +356,16 @@ def save_config_sheet(
             if not table_exists:
                 # 动态建表
                 col_defs = []
-                pk_inline_columns: List[str] = []
                 for col in columns:
                     col_name = col["name"]
                     col_type = col.get("type", "TEXT")
-                    is_pk = col.get("is_pk", False)
-                    if is_pk:
-                        col_defs.append(f"{col_name} {col_type}")
-                        pk_inline_columns.append(col_name)
-                    else:
-                        col_defs.append(f"{col_name} {col_type}")
+                    col_defs.append(f"{col_name} {col_type}")
                 if pk_columns:
-                    # 多主键: 表级 PRIMARY KEY (col1, col2, ...)
+                    # 复合唯一键 / 主键（与 config.yaml unique_keys 或 Excel 主键标记一致）
                     create_sql = (
                         f"CREATE TABLE {table_name} ("
                         f"{','.join(col_defs)}, "
-                        f"PRIMARY KEY ({','.join(pk_inline_columns)})"
+                        f"PRIMARY KEY ({','.join(pk_columns)})"
                         f")"
                     )
                 else:

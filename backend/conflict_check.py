@@ -62,17 +62,19 @@ def collect_conflicts(cells: List[Dict[str, Any]], use_original_pci: bool = True
     _directional_skip_count = 0
     from cell_filters import filter_cells_for_map_and_plan
     from geo_utils import vincenty_distance, mutual_back_facing
+    from pci_scope import cell_freq_band_key
     cells = filter_cells_for_map_and_plan(cells)
     pci_field = "pci" if use_original_pci else "new_pci"
 
-    # 同制式分组
-    groups: Dict[str, List[Dict[str, Any]]] = {}
+    # 同制式 + 同频段（同频）分组，异频不参与 PCI 冲突
+    groups: Dict[tuple, List[Dict[str, Any]]] = {}
     for c in cells:
-        groups.setdefault(c.get("rat", "LTE"), []).append(c)
+        key = (c.get("rat", "LTE"), cell_freq_band_key(c))
+        groups.setdefault(key, []).append(c)
 
     conflicts: List[Dict[str, Any]] = []
 
-    for rat, group in groups.items():
+    for (rat, _fb), group in groups.items():
         for i in range(len(group)):
             for j in range(i + 1, len(group)):
                 a = group[i]
