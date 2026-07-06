@@ -26,16 +26,17 @@ jobs:
           pip install pyinstaller
 
       - name: Issue license for bundle
+        shell: pwsh
         env:
           WYBX_LICENSE_HMAC_KEY: ${{ secrets.WYBX_LICENSE_HMAC_KEY }}
         run: |
-          if "%WYBX_LICENSE_HMAC_KEY%"=="" (
-            echo "::warning::未配置 WYBX_LICENSE_HMAC_KEY，使用默认开发密钥签发 license（仅适合内测）。"
+          if ([string]::IsNullOrWhiteSpace($env:WYBX_LICENSE_HMAC_KEY)) {
+            Write-Host "::warning::未配置 WYBX_LICENSE_HMAC_KEY，使用默认开发密钥签发 license（仅适合内测）。"
             python scripts/issue_license.py --expires 2027-12-31 --out license.lic
-          ) else (
-            echo %WYBX_LICENSE_HMAC_KEY%> .license_key
+          } else {
+            Set-Content -Path .license_key -Value $env:WYBX_LICENSE_HMAC_KEY -NoNewline -Encoding utf8
             python scripts/issue_license.py --expires 2027-12-31 --out license.lic
-          )
+          }
 
       - name: Build EXE with PyInstaller (onedir)
         run: |
