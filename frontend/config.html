@@ -380,9 +380,37 @@
     font-size: 11px; color: #888;
     display: flex; gap: 12px;
   }
+  .table-card .table-check {
+    flex-shrink: 0;
+    display: flex; align-items: center;
+  }
+  .table-card .table-check input[type="checkbox"] {
+    width: 16px; height: 16px;
+    accent-color: #7c4dff;
+    cursor: pointer;
+  }
+  .table-card.selected {
+    border-color: #7c4dff;
+    background: rgba(124, 77, 255, 0.08);
+  }
   .table-card .table-actions {
     display: flex; gap: 6px;
     flex-shrink: 0;
+  }
+  .tables-batch-bar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    background: #2a2a2a;
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    font-size: 12px;
+    color: #aaa;
+  }
+  .tables-batch-bar .batch-count {
+    flex: 1;
+    min-width: 120px;
+    color: #ccc;
   }
 
   /* 分页 */
@@ -642,6 +670,14 @@
         <input type="text" id="tables-search" placeholder="搜索表名..." />
         <button class="btn btn-small" id="btn-refresh-tables">刷新</button>
       </div>
+      <div class="tables-batch-bar" id="tables-batch-bar" style="display:none;">
+        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; color:#ccc;">
+          <input type="checkbox" id="tables-select-all-page" style="width:16px; height:16px; accent-color:#7c4dff;" />
+          全选当前列表
+        </label>
+        <span class="batch-count" id="tables-selected-count">已选 0 项</span>
+        <button class="btn btn-small btn-danger" id="btn-batch-delete-tables" disabled>批量删除</button>
+      </div>
       <div id="tables-list">
         <div class="empty-state">
           <div class="icon">📊</div>
@@ -737,7 +773,7 @@
   </div>
 </div>
 
-<script src="/static/js/api.js?v=2"></script>
-<script src="/static/js/config.js?v=2"></script>
+<script src="/static/js/api.js?v=3"></script>
+<script src="/static/js/config.js?v=3"></script>
 </body>
 </html>

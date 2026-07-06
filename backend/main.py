@@ -50,7 +50,14 @@ _LICENSE_STATUS = ensure_license_or_exit(
 from cell_filters import filter_cells_for_map_and_plan
 from conflict_check import collect_conflicts, get_directional_skip_count, stats_summary
 from cell_sync import sync_cells_from_config
-from data_parser import describe_file_rat_profile, finalize_manual_cell, parse_work_params
+from data_parser import (
+    apply_bulk_sector_updates,
+    describe_file_rat_profile,
+    finalize_manual_cell,
+    generate_bulk_sector_update_template,
+    parse_bulk_sector_updates,
+    parse_work_params,
+)
 from db import clear_all as db_clear_all
 from db import init_db, init_config_db, load_all as db_load_all, save_all as db_save_all
 from db import (
@@ -598,6 +605,62 @@ async def api_upload_batch(
     resp["file_count"] = len(files)
     resp["files"] = file_reports
     return resp
+
+
+@app.post("/api/workparams/bulk-update")
+async def api_workparams_bulk_update(file: UploadFile = File(...)):
+    """
+    按 CGI/ECGI 关联批量更新工参中的 pci、tac、earfcn（csv/xlsx/xls）。
+    文件需含 cgi 列及 pci/tac/earfcn 中至少一列有值；空单元格表示不修改该字段。
+    """
+    if not STATE.cells:
+        raise HTTPException(400, "请先导入工参，再执行文件更新")
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "文件为空")
+
+    parsed = parse_bulk_sector_updates(content, file.filename or "update.xlsx")
+    if not parsed.get("success"):
+        raise HTTPException(400, parsed.get("error", "解析失败"))
+
+    rows = parsed.get("rows") or []
+    if not rows and not parsed.get("invalid_rows"):
+        raise HTTPException(400, "文件无有效更新行")
+
+    apply_result = apply_bulk_sector_updates(STATE.cells, rows)
+    if apply_result.get("updated", 0) > 0:
+        _refresh_workparam_stats()
+        _persist_current()
+
+    return {
+        "success": True,
+        "filename": file.filename,
+        "parse_stats": parsed.get("stats"),
+        "invalid_rows": (parsed.get("invalid_rows") or [])[:100],
+        **apply_result,
+        "cells_count": len(STATE.cells),
+    }
+
+
+@app.get("/api/workparams/bulk-update/template")
+async def api_workparams_bulk_update_template():
+    """下载 CGI + pci/tac/earfcn 四列更新模板。"""
+    from urllib.parse import quote
+
+    blob = generate_bulk_sector_update_template()
+    ascii_name = "sector_update_template.xlsx"
+    cn_name = "工参更新模板_cgi_pci_tac_earfcn.xlsx"
+    headers = {
+        "Content-Disposition": (
+            f'attachment; filename="{ascii_name}"; '
+            f"filename*=UTF-8''{quote(cn_name)}"
+        ),
+    }
+    return Response(
+        blob,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
 
 
 @app.post("/api/plan/all")
@@ -1463,15 +1526,11 @@ async def api_plan_batch(
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "批量规划失败"))
 
-    # 持久化
-    try:
-        db_save_all(STATE.cells)
-    except Exception as e:
-        result.setdefault("log", []).append(f"[warn] DB 持久化失败: {e}")
+    export_cells = result.get("export_cells") or STATE.cells
 
-    # 生成多 sheet xlsx
+    # 生成多 sheet xlsx（不写 STATE / 不入库）
     xlsx_blob = export_plan_split_sheets(
-        STATE.cells, result["planned_ecgis"], nbr_plan_types=npt_list
+        export_cells, result["planned_ecgis"], nbr_plan_types=npt_list
     )
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1544,15 +1603,15 @@ async def api_plan_batch_stream(
         )
         if not result.get("success"):
             raise RuntimeError(result.get("error", "批量规划失败"))
-        # 持久化
-        try:
-            db_save_all(STATE.cells)
-        except Exception as e:
-            result.setdefault("log", []).append(f"[warn] DB 持久化失败: {e}")
+        # 批量规划仅内存计算，不修改 STATE.cells、不写 cells 表
+        result.setdefault("log", []).append(
+            "[批量规划] 结果仅导出 xlsx，未写入工参库"
+        )
         # 生成 xlsx
         progress_cb(98, "正在生成 xlsx…")
+        export_cells = result.get("export_cells") or STATE.cells
         xlsx_blob = export_plan_split_sheets(
-            STATE.cells, result["planned_ecgis"], nbr_plan_types=npt_list
+            export_cells, result["planned_ecgis"], nbr_plan_types=npt_list
         )
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         cn_name = f"批量规划结果_{ts}.xlsx"
@@ -2322,6 +2381,31 @@ async def api_config_delete_table(table_name: str):
     if not success:
         raise HTTPException(500, "删除失败")
     return {"success": True, "message": f"已删除表 cfg_{table_name}"}
+
+
+class ConfigBatchDeleteTablesRequest(BaseModel):
+    table_names: List[str]
+
+
+@app.post("/api/config/tables/batch-delete")
+async def api_config_batch_delete_tables(body: ConfigBatchDeleteTablesRequest):
+    """批量删除配置表（table_names 为不含 cfg_ 前缀的显示名）"""
+    names = [n.strip() for n in (body.table_names or []) if n and str(n).strip()]
+    if not names:
+        raise HTTPException(400, "请至少选择一个表")
+    deleted: List[str] = []
+    failed: List[Dict[str, str]] = []
+    for name in names:
+        if delete_config_table(name):
+            deleted.append(name)
+        else:
+            failed.append({"table_name": name, "error": "删除失败"})
+    return {
+        "success": len(failed) == 0,
+        "deleted": deleted,
+        "failed": failed,
+        "message": f"已删除 {len(deleted)} 个表" + (f"，{len(failed)} 个失败" if failed else ""),
+    }
 
 
 # ── 列配置管理（Web界面） ────────────────────

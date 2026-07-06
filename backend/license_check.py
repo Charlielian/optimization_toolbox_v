@@ -1,6 +1,7 @@
 """运行时许可校验。"""
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -21,6 +22,7 @@ from app_paths import resolve_data_path, resolve_resource, runtime_root
 ROOT_DIR = runtime_root()
 _LICENSE_PREFIX = "wybx-license-v1|"
 _CLOCK_STATE_PREFIX = "wybx-clock-v1|"
+_LICENSE_FILE_MAGIC_V2 = "WYBXLIC2"
 _DEFAULT_HMAC_KEY = b"wybx-dev-change-before-release-2026"
 logger = logging.getLogger(__name__)
 
@@ -56,10 +58,51 @@ def _license_hmac_key() -> bytes:
         return env.encode("utf-8")
     key_file = resolve_resource(".license_key")
     if key_file.is_file():
-        text = key_file.read_text(encoding="utf-8").strip()
+        text = key_file.read_text(encoding="utf-8-sig").strip()
         if text:
             return text.encode("utf-8")
     return _DEFAULT_HMAC_KEY
+
+
+def _fernet_key_from_hmac(hmac_key: bytes) -> bytes:
+    """由 HMAC 主密钥派生 Fernet 密钥（仅用于 license 文件加解密）。"""
+    digest = hashlib.sha256(b"wybx-license-fernet-v1|" + hmac_key).digest()
+    return base64.urlsafe_b64encode(digest)
+
+
+def encrypt_license_payload(payload: Dict[str, Any], key: Optional[bytes] = None) -> str:
+    """签发用：返回密文 license 文件全文（单行）。"""
+    from cryptography.fernet import Fernet
+
+    k = key if key is not None else _license_hmac_key()
+    f = Fernet(_fernet_key_from_hmac(k))
+    inner = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    token = f.encrypt(inner).decode("ascii")
+    return f"{_LICENSE_FILE_MAGIC_V2}:{token}"
+
+
+def _decrypt_license_blob(text: str, key: bytes) -> Dict[str, Any]:
+    from cryptography.fernet import Fernet, InvalidToken
+
+    raw = text.strip()
+    if raw.startswith(f"{_LICENSE_FILE_MAGIC_V2}:"):
+        token = raw.split(":", 1)[1].strip()
+        f = Fernet(_fernet_key_from_hmac(key))
+        try:
+            plain = f.decrypt(token.encode("ascii"))
+        except InvalidToken as e:
+            raise LicenseError("软件无法启动，请联系管理员。") from e
+        data = json.loads(plain.decode("utf-8"))
+        if not isinstance(data, dict):
+            raise LicenseError("软件无法启动，请联系管理员。")
+        return data
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise LicenseError("软件无法启动，请联系管理员。") from e
+    if not isinstance(data, dict):
+        raise LicenseError("软件无法启动，请联系管理员。")
+    return data
 
 
 def sign_expires(expires: str, key: Optional[bytes] = None) -> str:
@@ -85,12 +128,10 @@ def _load_license_file(path: Path) -> Dict[str, Any]:
     if not path.is_file():
         raise LicenseError("软件无法启动，请联系管理员。")
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
+        text = path.read_text(encoding="utf-8")
+    except OSError as e:
         raise LicenseError("软件无法启动，请联系管理员。") from e
-    if not isinstance(data, dict):
-        raise LicenseError("软件无法启动，请联系管理员。")
-    return data
+    return _decrypt_license_blob(text, _license_hmac_key())
 
 
 def _resolve_path(rel_or_abs: str) -> Path:

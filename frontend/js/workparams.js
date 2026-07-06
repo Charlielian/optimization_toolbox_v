@@ -4,6 +4,8 @@
 
   /** @type {File[]} */
   let currentFiles = [];
+  /** @type {File|null} */
+  let bulkUpdateFile = null;
   let currentCells = [];
   let currentStats = {};
   let currentPage = 1;
@@ -25,6 +27,7 @@
   // 初始化
   document.addEventListener('DOMContentLoaded', function () {
     initFileUpload();
+    initBulkUpdate();
     initTabs();
     initCellModal();
     loadStats();
@@ -152,6 +155,125 @@
     document.getElementById('btn-refresh-cells').addEventListener('click', loadCells);
 
     document.getElementById('btn-add-cell').addEventListener('click', () => openCellModal('create'));
+  }
+
+  function initBulkUpdate() {
+    const zone = document.getElementById('bulk-update-zone');
+    const input = document.getElementById('bulk-update-input');
+    const nameEl = document.getElementById('bulk-update-filename');
+    if (!zone || !input) return;
+
+    zone.addEventListener('click', () => input.click());
+    zone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      zone.classList.add('drag-over');
+    });
+    zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+    zone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      zone.classList.remove('drag-over');
+      const f = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) setBulkUpdateFile(f);
+    });
+
+    input.addEventListener('change', (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (f) setBulkUpdateFile(f);
+      input.value = '';
+    });
+
+    function setBulkUpdateFile(file) {
+      if (!file.name.match(/\.(xlsx|xls|csv)$/i)) {
+        log('更新文件仅支持 .xlsx / .xls / .csv', 'warn');
+        return;
+      }
+      bulkUpdateFile = file;
+      if (nameEl) nameEl.textContent = file.name;
+      log('已选择更新文件: ' + file.name, 'info');
+    }
+
+    document.getElementById('btn-bulk-update-template').addEventListener('click', () => {
+      API.downloadBulkUpdateTemplate()
+        .then(({ blob, filename }) => {
+          API.downloadBlob(blob, filename);
+          log('已下载文件更新模板', 'success');
+        })
+        .catch((e) => log('模板下载失败: ' + e.message, 'error'));
+    });
+
+    document.getElementById('btn-bulk-update').addEventListener('click', () => {
+      if (!bulkUpdateFile) {
+        input.click();
+        return;
+      }
+      doBulkUpdate();
+    });
+  }
+
+  async function doBulkUpdate() {
+    if (!bulkUpdateFile) {
+      log('请先选择更新文件', 'warn');
+      return;
+    }
+    const btn = document.getElementById('btn-bulk-update');
+    btn.disabled = true;
+    btn.classList.add('btn-loading');
+    try {
+      const result = await API.workparamsBulkUpdate(bulkUpdateFile);
+      renderBulkUpdateResult(result);
+      const u = result.updated || 0;
+      const nf = result.not_found_count || 0;
+      log(`文件更新完成: 成功 ${u} 条，未匹配 ${nf} 条`, u > 0 ? 'success' : 'warn');
+      if (u > 0) {
+        await loadStats();
+        await loadCells();
+      }
+    } catch (e) {
+      log('文件更新失败: ' + e.message, 'error');
+      const panel = document.getElementById('bulk-update-panel');
+      const wrap = document.getElementById('bulk-update-result');
+      if (panel && wrap) {
+        wrap.style.display = 'block';
+        panel.innerHTML = `<div class="result-item error">✗ ${escapeHtml(e.message)}</div>`;
+      }
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove('btn-loading');
+    }
+  }
+
+  function renderBulkUpdateResult(result) {
+    const wrap = document.getElementById('bulk-update-result');
+    const panel = document.getElementById('bulk-update-panel');
+    if (!wrap || !panel) return;
+    wrap.style.display = 'block';
+
+    const ps = result.parse_stats || {};
+    const inv = result.invalid_rows || [];
+    let html = '';
+    html += `<div class="result-item success">✓ 已更新 <strong>${result.updated || 0}</strong> 条小区</div>`;
+    html += `<div class="result-item">解析: 有效行 ${ps.valid ?? '—'} / 共 ${ps.total ?? '—'}，格式错误 ${ps.invalid ?? 0}</div>`;
+    if (result.not_found_count > 0) {
+      html += `<div class="result-item warn">未匹配工参: ${result.not_found_count} 条</div>`;
+      const sample = (result.not_found_ecgis || result.not_found || []).slice(0, 8);
+      if (sample.length) {
+        html += `<div class="result-item" style="font-size:10px;color:#888;">示例: ${escapeHtml(sample.join(', '))}${result.not_found_count > 8 ? '…' : ''}</div>`;
+      }
+    }
+    if (result.skipped_duplicate_ecgi > 0) {
+      html += `<div class="result-item warn">文件中重复 CGI 已跳过: ${result.skipped_duplicate_ecgi}</div>`;
+    }
+    if (result.skipped_pci_invalid > 0) {
+      html += `<div class="result-item warn">PCI 与制式范围不符已跳过: ${result.skipped_pci_invalid}</div>`;
+    }
+    if (inv.length > 0) {
+      html += `<div class="result-item error">行级错误 ${inv.length} 条（最多展示 5 条）</div>`;
+      inv.slice(0, 5).forEach((row) => {
+        const errs = (row.errors || []).join('; ');
+        html += `<div class="result-item" style="font-size:10px;">第 ${row.row} 行 ${escapeHtml(row.ecgi || '')}: ${escapeHtml(errs)}</div>`;
+      });
+    }
+    panel.innerHTML = html;
   }
 
   function initCellModal() {
@@ -747,6 +869,15 @@
   }
 
   // ========== 工具函数 ==========
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
   function log(message, type) {
     type = type || 'info';
     const panel = document.getElementById('log-panel');

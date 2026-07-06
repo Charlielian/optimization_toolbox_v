@@ -125,6 +125,17 @@ def assert_same_site_sss_shared(cells: List[Dict[str, Any]],
 
     errors: List[str] = []
     for site_key, group in groups.items():
+        # 工参库中同一 ECGI 重复行只计一次（常见于批量规划重复上传）
+        _seen_ecgi: set = set()
+        _deduped: List[Dict[str, Any]] = []
+        for c in group:
+            e = c.get("ecgi")
+            if e and e in _seen_ecgi:
+                continue
+            if e:
+                _seen_ecgi.add(e)
+            _deduped.append(c)
+        group = _deduped
         if len(group) < 2:
             continue  # 单扇区站不需要检查
         # 收集已分配的 N_ID(1) 和 mod3

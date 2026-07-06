@@ -17,7 +17,7 @@ if sys.stderr.encoding != "utf-8":
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
-from license_check import ROOT_DIR, sign_expires  # noqa: E402
+from license_check import ROOT_DIR, encrypt_license_payload, sign_expires  # noqa: E402
 
 
 def main() -> None:
@@ -39,8 +39,9 @@ def main() -> None:
     sig = sign_expires(expires)
     payload = {"expires": expires, "signature": sig}
     out: Path = args.out
-    out.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"已写入 {out}")
+    blob = encrypt_license_payload(payload)
+    out.write_text(blob + "\n", encoding="utf-8")
+    print(f"已写入 {out}（密文 WYBXLIC2）")
     print(f"  expires:   {expires}")
     print(f"  signature: {sig[:16]}…")
 

@@ -41,6 +41,33 @@ const API = {
     return res.json();
   },
 
+  /** 按 CGI 批量更新 pci / tac / earfcn（csv/xlsx） */
+  async workparamsBulkUpdate(file) {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch(this.base + '/api/workparams/bulk-update', {
+      method: 'POST',
+      body: form,
+    });
+    if (!res.ok) throw new Error(await this._parseApiError(res));
+    return res.json();
+  },
+
+  async downloadBulkUpdateTemplate() {
+    const res = await fetch(this.base + '/api/workparams/bulk-update/template');
+    if (!res.ok) throw new Error('更新模板下载失败');
+    const blob = await res.blob();
+    const dispo = res.headers.get('Content-Disposition') || '';
+    let filename = 'sector_update_template.xlsx';
+    const mStar = dispo.match(/filename\*=UTF-8''([^;]+)/i);
+    if (mStar) filename = decodeURIComponent(mStar[1]);
+    else {
+      const m = dispo.match(/filename="([^"]+)"/);
+      if (m) filename = m[1];
+    }
+    return { blob, filename };
+  },
+
   async planAll(params) {
     const res = await fetch(this.base + '/api/plan/all', {
       method: 'POST',
@@ -227,11 +254,13 @@ const API = {
     });
     if (!res.ok || !res.body) throw new Error(await res.text());
     const finalEvent = await _consumeSSE(res, onProgress);
-    if (!finalEvent || finalEvent.type !== 'done' || !finalEvent.session_id) {
-      throw new Error('规划未正常结束');
+    // SSE event 名为 done，data 体为 { session_id, filename, stats }（不含 type 字段）
+    const sessionId = finalEvent && finalEvent.session_id;
+    if (!sessionId) {
+      throw new Error((finalEvent && finalEvent.message) || '规划未正常结束');
     }
     // 拉取 xlsx
-    const dl = await fetch(this.base + '/api/plan/batch/result/' + encodeURIComponent(finalEvent.session_id));
+    const dl = await fetch(this.base + '/api/plan/batch/result/' + encodeURIComponent(sessionId));
     if (!dl.ok) throw new Error('下载批量规划结果失败: ' + (await dl.text()));
     const blob = await dl.blob();
     let filename = finalEvent.filename || 'batch_plan.xlsx';
@@ -359,6 +388,16 @@ const API = {
   async configDeleteTable(tableName) {
     const res = await fetch(this.base + '/api/config/table/' + encodeURIComponent(tableName), {
       method: 'DELETE',
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async configBatchDeleteTables(tableNames) {
+    const res = await fetch(this.base + '/api/config/tables/batch-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ table_names: tableNames }),
     });
     if (!res.ok) throw new Error(await res.text());
     return res.json();

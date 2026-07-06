@@ -120,6 +120,71 @@ def _build_per_site_thresholds(state_cells: List[Dict[str, Any]]) -> Dict[str, T
     return build_per_site_thresholds(state_cells, default_safe_m=1500.0, default_same_pci_min_m=30000.0)
 
 
+def _pci_scope_key(cell: Dict[str, Any]) -> Tuple[Any, ...]:
+    """同制式 + 同规划频段视为 PCI 冲突同一范围（批量多扇区合并用）"""
+    fb = cell.get("plan_freq_band") or cell.get("freq_band") or ""
+    return (cell.get("rat"), str(fb).strip())
+
+
+def _dedupe_cells_by_ecgi(cells: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen: Set[str] = set()
+    out: List[Dict[str, Any]] = []
+    for c in cells:
+        e = c.get("ecgi")
+        if e and e in seen:
+            continue
+        if e:
+            seen.add(e)
+        out.append(c)
+    return out
+
+
+def _build_pci_planning_units(
+    new_cells: List[Dict[str, Any]], batch_plan_pci: bool
+) -> List[Tuple[Tuple, List[Dict[str, Any]]]]:
+    """
+    批量规划：同经纬度 + 同制式/频段的多行合并为一个 SSS 站组（即使未填统一基站名）。
+    单站/非批量：仍按 group_cells_by_site（site_name 优先）。
+    """
+    from pci_sss_constraints import group_cells_by_site
+
+    if not batch_plan_pci:
+        units: List[Tuple[Tuple, List[Dict[str, Any]]]] = []
+        for sk, grp in group_cells_by_site(new_cells).items():
+            deduped = _dedupe_cells_by_ecgi(grp)
+            if deduped:
+                units.append((sk, deduped))
+        return units
+
+    from collections import defaultdict
+
+    buckets: Dict[Tuple, List[Dict[str, Any]]] = defaultdict(list)
+    for c in new_cells:
+        lat = round(float(c["lat"]), 6)
+        lon = round(float(c["lon"]), 6)
+        buckets[(lat, lon, _pci_scope_key(c))].append(c)
+
+    units = []
+    for bucket_key in sorted(buckets.keys()):
+        grp = _dedupe_cells_by_ecgi(buckets[bucket_key])
+        if not grp:
+            continue
+        lat, lon, scope = bucket_key
+        phy = (grp[0].get("phy_name") or "").strip()
+        if phy:
+            site_key: Tuple = ("phy", phy, scope)
+        elif len(grp) >= 2:
+            site_key = ("batch_coord", lat, lon, scope[0], scope[1])
+        else:
+            site_key = ("site", grp[0].get("site_name") or f"coord_{lat}_{lon}")
+        if len(grp) >= 2:
+            unified = phy or f"批量规划站_{lat}_{lon}"
+            for c in grp:
+                c["site_name"] = unified
+        units.append((site_key, grp))
+    return units
+
+
 def _run_pci_planning(
     cells: List[Dict[str, Any]],
     planned_indices: List[int],
@@ -130,6 +195,7 @@ def _run_pci_planning(
     target_indices: Optional[List[int]] = None,
     progress_cb: Optional[Any] = None,
     directional_filter: bool = True,
+    batch_plan_pci: bool = False,
 ) -> Dict[str, Any]:
     """
     局部 PCI 规划 (O(target² + target×N))：
@@ -215,12 +281,19 @@ def _run_pci_planning(
         c.pop("pci_candidates", None)
         c.pop("pci_groups", None)
 
-    # ── 同站小区 SSS 约束：同站 PCI div3 相同，mod3 不同 ──
-    # PCI = 3 × N_ID(1) + N_ID(2)，同站须 N_ID(1) 相同、N_ID(2) 各异
+    # ── 站组：批量时同经纬度+同频段合并（未填统一基站名也能 mod3 分扇区）；单站仍按 site_name ──
     from collections import defaultdict
-    site_groups: Dict[Tuple[float, float], List[Dict[str, Any]]] = defaultdict(list)
-    for c in new_cells:
-        site_groups[(round(c["lat"], 6), round(c["lon"], 6))].append(c)
+
+    planning_units = _build_pci_planning_units(new_cells, batch_plan_pci=batch_plan_pci)
+    if batch_plan_pci and planning_units:
+        merged = sum(len(g) for _, g in planning_units)
+        log.append(f"[PCI] 批量站组 {len(planning_units)} 组 / {merged} 扇区（同坐标同频段已合并）")
+    coord_to_site_keys: Dict[Tuple[float, float], List[Tuple]] = defaultdict(list)
+    for sk, grp in planning_units:
+        if not grp:
+            continue
+        ck = (round(float(grp[0]["lat"]), 6), round(float(grp[0]["lon"]), 6))
+        coord_to_site_keys[ck].append(sk)
 
     # ── 同站已规划小区：本批次 new_cells 之外的、与 new_cells 同 site_name ──
     # 这些小区可能是之前几次单站规划累积下来的 "PLAN_宏站" 兄弟扇区,它们必须共享 nid1
@@ -243,8 +316,8 @@ def _run_pci_planning(
             # 同时记录到 coord 维度,方便 site_groups 桶对齐
             if olat is not None and olon is not None:
                 coord_key = (round(olat, 6), round(olon, 6))
-                if coord_key in site_groups:
-                    same_site_existing[coord_key].append((nid1_val, mod3_val))
+                for sk in coord_to_site_keys.get(coord_key, []):
+                    same_site_existing[sk].append((nid1_val, mod3_val))
             continue
         # 同坐标 (兜底: 仅当 ex_cell 没有 site_name 时才视为同站,否则属不同站点,绝不共享 nid1)
         # ── 修复:之前错误地按"同坐标"硬塞,会把 site_name 不同的相邻小区 (例如真实工参站 vs
@@ -255,10 +328,12 @@ def _run_pci_planning(
         if olat is None or olon is None:
             continue
         coord_key = (round(olat, 6), round(olon, 6))
-        if coord_key in site_groups:
-            same_site_existing[coord_key].append((nid1_val, mod3_val))
+        for sk in coord_to_site_keys.get(coord_key, []):
+            same_site_existing[sk].append((nid1_val, mod3_val))
 
-    for s_cells in site_groups.values():
+    for site_key, s_cells in planning_units:
+        if not s_cells:
+            continue
         n = len(s_cells)
         site_lat = s_cells[0]["lat"]
         site_lon = s_cells[0]["lon"]
@@ -315,12 +390,10 @@ def _run_pci_planning(
 
         # ── 复用同站已有的 nid1：若之前已规划过同站小区 (按 site_name 或坐标),
         #     必须沿用, 否则 SSS 硬性校验会失败 ──
-        site_existing = same_site_existing.get(coord_key, [])
-        # 补齐: 若 new_cells[0] 有 site_name 且之前按 site_name 命中的小区存在, 也强制沿用
+        site_existing = list(same_site_existing.get(site_key, []))
         new_site_name = s_cells[0].get("site_name")
-        if new_site_name and new_site_name in same_site_name_existing and not site_existing:
-            # 取首个 nid1 作为强约束 (同站共享)
-            site_existing = same_site_name_existing[new_site_name]
+        if new_site_name and new_site_name in same_site_name_existing:
+            site_existing.extend(same_site_name_existing[new_site_name])
 
         if site_existing:
             # 取首个已用 nid1 作为强约束 (同站所有扇区共享)
@@ -361,6 +434,16 @@ def _run_pci_planning(
             c["_nid1"] = site_nid1
             c["_nid2"] = target_mod
             c["_forced_pci"] = site_nid1 * 3 + target_mod
+
+        # 批量迭代：本组 PCI 立即进入全局冲突池，后续站组规划时不能再分配相同 PCI
+        if batch_plan_pci:
+            for c in s_cells:
+                fp = c.get("_forced_pci")
+                if fp is None:
+                    continue
+                pci_int = int(fp)
+                c["new_pci"] = pci_int
+                existing_pci[c["ecgi"]] = (pci_int, c.get("lat"), c.get("lon"))
 
         nid1_vals = [c["_nid1"] for c in s_cells]
         log.append(f"[DEBUG] site nearby={len(nearby_pcis)} site_nid1={site_nid1} per-sector nid1={nid1_vals}")
@@ -613,6 +696,7 @@ def _run_neighbor_planning(
     # ── 第一圈邻区半径: 距离 ≤ 此值的小区强制加入 (不因 score 过滤) ──
     # 工程惯例: reuse 半径内所有小区都应作为邻区候选, 不论扇区是否正交
     first_ring_km: Optional[float] = None,
+    per_src_score_threshold: Optional[Dict[str, float]] = None,
     progress_cb: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """对全部 cells 执行邻区规划, 可选邻区类型过滤 / 局部过滤"""
@@ -629,6 +713,7 @@ def _run_neighbor_planning(
         max_distance_km=max_distance_km,
         score_threshold=score_threshold,
         first_ring_km=first_ring_km,
+        per_src_score_threshold=per_src_score_threshold,
     )
     if progress_cb:
         try:
@@ -813,12 +898,11 @@ def plan_batch_sites(
     directional_filter: bool = True,
 ) -> Dict[str, Any]:
     """
-    批量规划主流程.
+    批量规划主流程（内存态，不写 STATE / 不入库）.
 
     1. 解析 xlsx (复用 data_parser)
-    2. 校验, 500 行上限
-    3. 按 planning_mode 选择性执行: PCI + 邻区
-    4. 返回 {planned_cells, planned_ecgis, nbr_by_type, log, stats}
+    2. 与 state_cells（现网工参）在副本上联合 PCI + 邻区规划
+    3. 返回规划结果与 export_cells 快照，供导出 xlsx
     """
     log: List[str] = []
     log.append(f"[批量规划] 文件: {filename}, engine={engine}, mode={planning_mode}")
@@ -855,37 +939,38 @@ def plan_batch_sites(
         try: progress_cb(15, f"已解析 {total_parsed} 行")
         except Exception: pass
 
-    all_planned_ecgis: List[str] = []
-
-    # ── 按 ecgi 分组: 同 ecgi 表示同站多扇区 (input 行本身就是 1 个 cell) ──
-    # 简化: 每行 cell 视为 1 个独立 cell, 不做二次展开
-    # (但保留 n_sectors 字段以兼容模板)
-    start_idx = len(state_cells)
+    # ── 每行模板 = 1 个待规划小区；在内存副本上与现网工参联合规划 ──
+    batch_cells: List[Dict[str, Any]] = []
     for c in valid_cells:
-        # 默认 plan_site_type (从 site_type 推断)
-        if not c.get("plan_site_type"):
-            c["plan_site_type"] = to_plan_site_type(c.get("site_type"))
-        c.setdefault("n_sectors", 1)
-        c.setdefault("base_azimuth", c.get("azimuth", 0))
-        c.setdefault("locked", False)
-        # 批量：优先「规划频段」列；否则用文件「详细使用频段」原文；再否则标准化后的 freq_band
-        if c.get("plan_freq_band") is None or str(c.get("plan_freq_band")).strip() == "":
-            raw = c.get("freq_band_raw")
+        row = copy.deepcopy(c)
+        if not row.get("plan_site_type"):
+            row["plan_site_type"] = to_plan_site_type(row.get("site_type"))
+        row.setdefault("n_sectors", 1)
+        row.setdefault("base_azimuth", row.get("azimuth", 0))
+        row.setdefault("locked", False)
+        row["is_temp"] = True
+        row["is_batch_plan"] = True
+        if row.get("plan_freq_band") is None or str(row.get("plan_freq_band")).strip() == "":
+            raw = row.get("freq_band_raw")
             if raw is not None and str(raw).strip():
-                c["plan_freq_band"] = str(raw).strip()
+                row["plan_freq_band"] = str(raw).strip()
             else:
-                c["plan_freq_band"] = c.get("freq_band") or ""
-        enrich_cell_with_sector(c)
+                row["plan_freq_band"] = row.get("freq_band") or ""
+        enrich_cell_with_sector(row)
+        batch_cells.append(row)
 
-    state_cells.extend(valid_cells)
-    all_planned_indices = list(range(start_idx, start_idx + len(valid_cells)))
-    all_planned_ecgis = [c["ecgi"] for c in valid_cells]
+    all_planned_ecgis = [str(c.get("ecgi")) for c in batch_cells if c.get("ecgi")]
+    work_cells = copy.deepcopy(state_cells) + batch_cells
+    all_planned_indices = list(range(len(state_cells), len(work_cells)))
+    log.append(
+        f"[批量规划] 现网 {len(state_cells)} 小区 + 待规划 {len(batch_cells)} 小区（仅内存，不写库）"
+    )
 
-    # ── 局部 PCI 规划: 仅对新增小区分配 PCI ──
+    # ── 局部 PCI 规划: 仅对待规划行分配 PCI ──
     if planning_mode in ("pci", "pci+nbr"):
         log.append(f"[批量规划] 局部PCI规划 (reuse={reuse_distance_km}km) ...")
         pci_result = _run_pci_planning(
-            state_cells, all_planned_indices,
+            work_cells, all_planned_indices,
             engine=engine,
             reuse_distance_km=reuse_distance_km,
             check_mod6=check_mod6,
@@ -893,6 +978,7 @@ def plan_batch_sites(
             target_indices=all_planned_indices,
             progress_cb=progress_cb,
             directional_filter=directional_filter,
+            batch_plan_pci=True,
         )
         log.extend(pci_result.get("log", []))
     else:
@@ -903,7 +989,7 @@ def plan_batch_sites(
     if planning_mode in ("nbr", "pci+nbr"):
         log.append(f"[批量规划] 局部邻区规划 (reuse={reuse_distance_km}km) ...")
         nbr_result = _run_neighbor_planning(
-            state_cells,
+            work_cells,
             nbr_plan_types=nbr_plan_types,
             use_beam_overlap_score=use_beam_overlap_score,
             target_ecgis=all_planned_ecgis,
@@ -915,19 +1001,21 @@ def plan_batch_sites(
         nbr_result = {"stats": {}, "log": []}
         log.append("[批量规划] 跳过邻区规划 (模式: 仅PCI规划)")
 
+    planned_set = set(all_planned_ecgis)
     if planning_mode == "pci":
-        for c in state_cells:
-            if c["ecgi"] in all_planned_ecgis:
+        for c in work_cells:
+            if c.get("ecgi") in planned_set:
                 c["neighbors"] = []
         nbr_by_type = {k: [] for k in ("4G_4G", "4G_5G", "5G_4G", "5G_5G")}
     else:
-        nbr_by_type = _group_neighbors_by_type(state_cells, all_planned_ecgis)
-    planned_cells_view = [c for c in state_cells if c["ecgi"] in all_planned_ecgis]
+        nbr_by_type = _group_neighbors_by_type(work_cells, all_planned_ecgis)
+    planned_cells_view = [c for c in work_cells if c.get("ecgi") in planned_set]
 
     return {
         "success": True,
         "planned_cells": planned_cells_view,
         "planned_ecgis": all_planned_ecgis,
+        "export_cells": work_cells,
         "nbr_by_type": nbr_by_type,
         "log": log,
         "engine": engine,
@@ -936,6 +1024,7 @@ def plan_batch_sites(
             "planned": len(planned_cells_view),
             "truncated": total_parsed > BATCH_MAX_ROWS,
             "invalid_rows": len(parsed.get("invalid_rows", [])),
+            "network_cells": len(state_cells),
         },
         "invalid_rows": parsed.get("invalid_rows", []),
         "pci_stats": pci_result.get("stats", {}),

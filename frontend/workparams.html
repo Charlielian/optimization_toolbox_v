@@ -649,9 +649,29 @@
         </div>
       </div>
 
+      <!-- 文件更新 PCI/TAC/EARFCN -->
+      <div class="section">
+        <div class="section-title">2. 文件更新</div>
+        <p style="font-size:11px;color:#888;margin-bottom:8px;line-height:1.45;">
+          上传含 <strong style="color:#ccc;">cgi、pci、tac、earfcn</strong> 的 csv/xlsx，按 CGI 与工参 ECGI 关联，仅更新这三列（空单元格不修改）。
+        </p>
+        <input type="file" id="bulk-update-input" accept=".xlsx,.xls,.csv" style="display:none;" />
+        <div class="file-drop-zone bulk-update-zone" id="bulk-update-zone" style="padding:14px;">
+          <div class="text">点击选择更新文件</div>
+          <div class="hint" id="bulk-update-filename">未选择文件</div>
+        </div>
+        <div class="btn-group" style="margin-top: 10px;">
+          <button class="btn btn-primary" id="btn-bulk-update" type="button" style="flex:2;">应用更新</button>
+          <button class="btn btn-small" id="btn-bulk-update-template" type="button">下载模板</button>
+        </div>
+        <div id="bulk-update-result" style="display:none;margin-top:10px;">
+          <div class="result-panel" id="bulk-update-panel"></div>
+        </div>
+      </div>
+
       <!-- 模板下载 -->
       <div class="section">
-        <div class="section-title">2. 模板下载</div>
+        <div class="section-title">3. 模板下载</div>
         <div class="btn-group">
           <button class="btn btn-small" id="btn-template-4g">4G模板</button>
           <button class="btn btn-small" id="btn-template-5g">5G模板</button>
@@ -661,7 +681,7 @@
 
       <!-- 导出 -->
       <div class="section">
-        <div class="section-title">3. 数据导出</div>
+        <div class="section-title">4. 数据导出</div>
         <div class="btn-group">
           <button class="btn btn-success" id="btn-export-workparams">工参表</button>
           <button class="btn btn-success" id="btn-export-neighbors">邻区清单</button>

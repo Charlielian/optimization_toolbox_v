@@ -213,6 +213,8 @@ def plan_neighbors(
     # 距离 ≤ first_ring_km 的候选邻区 score 强制为 1.0, 确保通过任何阈值
     # 适用于单站/局部规划: 复用半径内所有小区都应作为邻区候选
     first_ring_km: Optional[float] = None,
+    # 按源小区 ECGI 覆盖 score_threshold（批量模板「邻区得分阈值」列）
+    per_src_score_threshold: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     """
     主入口: 全网邻区规划
@@ -288,7 +290,11 @@ def plan_neighbors(
         # 这样 UI 显示的得分能反映真实相关性, 用户调整 score_threshold 时仍有梯度变化
         is_first_ring = first_ring_km is not None and d_m <= first_ring_km * 1000.0
 
-        if not is_first_ring and score < score_threshold:
+        src_thr = score_threshold
+        if per_src_score_threshold and src.get("ecgi"):
+            src_thr = per_src_score_threshold.get(str(src["ecgi"]), score_threshold)
+
+        if not is_first_ring and score < src_thr:
             continue
 
         nbr_type = _nbr_type_label(src, dst)

@@ -939,22 +939,92 @@
   }
   .plan-progress.error .plan-progress-percent { color: var(--accent-red); }
 
-  /* ===== 站点图例 ===== */
-  .legend {
+  /* ===== 站点图例（可拖动 / 显隐 / 调宽） ===== */
+  .map-legend-panel {
     position: absolute;
-    bottom: 20px;
-    right: 20px;
-    background: rgba(26,29,39,0.88);
+    z-index: 1000;
+    background: rgba(26,29,39,0.92);
     border: 1px solid var(--border-color);
     border-radius: var(--radius-md);
-    padding: 10px 14px;
-    z-index: 1000;
-    font-size: 11px;
-    color: var(--text-secondary);
     box-shadow: var(--shadow-md);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
+    display: flex;
+    flex-direction: column;
+    min-width: 160px;
+    max-width: min(420px, calc(100% - 24px));
+    max-height: min(70vh, calc(100% - 80px));
+    overflow: hidden;
+    font-size: 11px;
+    color: var(--text-secondary);
   }
+  .map-legend-panel.hidden { display: none; }
+  .map-legend-panel.dragging,
+  .map-legend-panel.resizing-w { transition: none; }
+  .map-legend-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    cursor: grab;
+    user-select: none;
+    background: rgba(255,255,255,0.02);
+    border-bottom: 1px solid var(--border-light);
+    flex-shrink: 0;
+  }
+  .map-legend-header:active { cursor: grabbing; }
+  .map-legend-header:hover { background: rgba(255,255,255,0.04); }
+  .map-legend-title {
+    flex: 1;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: 0.3px;
+  }
+  .map-legend-header-btns { display: flex; gap: 4px; align-items: center; }
+  .map-legend-btn {
+    background: none;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    padding: 2px 6px;
+    font-size: 11px;
+    line-height: 1.2;
+    font-family: inherit;
+    transition: all 0.15s ease;
+  }
+  .map-legend-btn:hover { color: var(--text-primary); background: var(--bg-tertiary); border-color: var(--border-hover); }
+  .map-legend-btn.close-btn:hover { color: var(--accent-red); border-color: rgba(255,107,107,0.3); background: rgba(255,107,107,0.08); }
+  .map-legend-chevron {
+    display: inline-block;
+    transition: transform 0.25s ease;
+    font-size: 10px;
+    opacity: 0.7;
+  }
+  .map-legend-panel.body-collapsed .map-legend-chevron { transform: rotate(-90deg); }
+  .map-legend-body {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 8px 12px 10px;
+    min-height: 0;
+  }
+  .map-legend-panel.body-collapsed .map-legend-body {
+    display: none;
+  }
+  .map-legend-body::-webkit-scrollbar { width: 3px; }
+  .map-legend-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 2px; }
+  .map-legend-resize-w {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 6px;
+    height: 100%;
+    cursor: ew-resize;
+    z-index: 2;
+  }
+  .map-legend-resize-w:hover { background: rgba(77,171,247,0.12); }
   .legend-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
   .legend-swatch {
     width: 0;
@@ -967,6 +1037,26 @@
   }
   .legend-section { color: var(--text-tertiary); font-size: 10px; margin: 5px 0 3px; border-top: 1px solid var(--border-light); padding-top: 4px; }
   .legend-section:first-child { border-top: none; padding-top: 0; margin-top: 0; }
+  #btn-legend-restore {
+    position: absolute;
+    bottom: 20px;
+    right: 20px;
+    z-index: 999;
+    display: none;
+    padding: 8px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-primary);
+    background: rgba(26,29,39,0.92);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    box-shadow: var(--shadow-md);
+    backdrop-filter: blur(12px);
+    font-family: inherit;
+  }
+  #btn-legend-restore.visible { display: block; }
+  #btn-legend-restore:hover { border-color: var(--border-hover); background: var(--bg-elevated); }
 
   /* ===== 地图底部邻区过滤条 ===== */
   #nbr-score-bar {
@@ -978,16 +1068,26 @@
     background: rgba(26,29,39,0.88);
     border: 1px solid var(--border-color);
     border-radius: var(--radius-md);
-    padding: 8px 16px;
+    padding: 8px 16px 10px;
     display: flex;
-    align-items: center;
-    gap: 10px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
     font-size: 12px;
     color: var(--text-secondary);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
-    white-space: nowrap;
     box-shadow: var(--shadow-md);
+    max-width: min(96vw, 920px);
+    min-width: min(520px, 96vw);
+  }
+  .nbr-score-bar-filters {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    flex-wrap: nowrap;
+    white-space: nowrap;
   }
   #nbr-score-bar-title {
     font-weight: 600;
@@ -1024,6 +1124,48 @@
     color: var(--text-tertiary);
     font-family: monospace;
     margin-left: 4px;
+  }
+  #nbr-score-counts {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 8px 14px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-light);
+    font-size: 11px;
+    color: var(--text-secondary);
+    width: 100%;
+    min-height: 22px;
+    box-sizing: border-box;
+  }
+  #nbr-score-counts .nbr-count-empty {
+    color: var(--text-tertiary);
+    font-family: monospace;
+  }
+  #nbr-score-counts .nbr-count-total {
+    color: var(--text-primary);
+    font-weight: 600;
+    margin-right: 2px;
+  }
+  #nbr-score-counts .nbr-count-total b,
+  #nbr-score-counts .nbr-count-item b {
+    font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+    color: var(--accent-blue);
+    font-weight: 700;
+  }
+  #nbr-score-counts .nbr-count-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+  }
+  #nbr-score-counts .nbr-count-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    flex-shrink: 0;
   }
 
   /* ===== 弹窗 ===== */
@@ -1337,21 +1479,34 @@
         <div class="plan-progress-bar"><div class="plan-progress-fill" id="pp-fill"></div></div>
       </div>
       <div id="nbr-score-bar">
-        <span id="nbr-score-bar-title">邻区过滤</span>
-        <label>类型</label>
-        <select id="nbr-score-type">
-          <option value="all">全部</option>
-          <option value="4G_4G">4G↔4G</option>
-          <option value="4G_5G">4G↔5G</option>
-          <option value="5G_4G">5G↔4G</option>
-          <option value="5G_5G">5G↔5G</option>
-        </select>
-        <label>得分</label>
-        <input type="range" id="nbr-score-min" min="0" max="100" value="0" step="1" />
-        <span id="nbr-score-min-label">≥0.00</span>
-        <span id="nbr-score-range" class="nbr-score-hint">—</span>
+        <div class="nbr-score-bar-filters">
+          <span id="nbr-score-bar-title">邻区过滤</span>
+          <label>类型</label>
+          <select id="nbr-score-type">
+            <option value="all">全部</option>
+            <option value="4G_4G">4G↔4G</option>
+            <option value="4G_5G">4G↔5G</option>
+            <option value="5G_4G">5G↔4G</option>
+            <option value="5G_5G">5G↔5G</option>
+          </select>
+          <label>得分</label>
+          <input type="range" id="nbr-score-min" min="0" max="100" value="0" step="1" />
+          <span id="nbr-score-min-label">≥0.00</span>
+          <span id="nbr-score-range" class="nbr-score-hint">—</span>
+        </div>
+        <div id="nbr-score-counts" aria-live="polite"><span class="nbr-count-empty">—</span></div>
       </div>
-      <div class="legend">
+      <button type="button" id="btn-legend-restore" title="显示图例">图例</button>
+      <div class="map-legend-panel" id="map-legend-panel" style="bottom:20px;right:20px;width:220px;">
+        <div class="map-legend-header" id="map-legend-header">
+          <span class="map-legend-chevron" aria-hidden="true">▼</span>
+          <span class="map-legend-title">图例</span>
+          <div class="map-legend-header-btns">
+            <button type="button" class="map-legend-btn" id="btn-legend-toggle-body" title="折叠/展开内容">折叠</button>
+            <button type="button" class="map-legend-btn close-btn" id="btn-legend-hide" title="隐藏图例">✕</button>
+          </div>
+        </div>
+        <div class="map-legend-body" id="map-legend-body">
         <div class="legend-section">扇区 mod3 填色</div>
         <div class="legend-row">
           <div class="legend-swatch" style="border-bottom-color:#ff6b6b; opacity:0.85;"></div>
@@ -1394,6 +1549,8 @@
         <div class="legend-row"><span style="display:inline-block;width:18px;text-align:center;font-family:monospace;font-weight:700;color:#ff6b6b;border:1px solid rgba(255,107,107,0.5);background:rgba(15,17,23,0.78);border-radius:3px;font-size:10px;line-height:14px;">0</span>mod3=0 (红)</div>
         <div class="legend-row"><span style="display:inline-block;width:18px;text-align:center;font-family:monospace;font-weight:700;color:#ffd43b;border:1px solid rgba(255,212,59,0.5);background:rgba(15,17,23,0.78);border-radius:3px;font-size:10px;line-height:14px;">1</span>mod3=1 (黄)</div>
         <div class="legend-row"><span style="display:inline-block;width:18px;text-align:center;font-family:monospace;font-weight:700;color:#4dabf7;border:1px solid rgba(77,171,247,0.5);background:rgba(15,17,23,0.78);border-radius:3px;font-size:10px;line-height:14px;">2</span>mod3=2 (蓝)</div>
+        </div>
+        <div class="map-legend-resize-w" id="map-legend-resize-w" title="拖动调整宽度"></div>
       </div>
     </div>
     <!-- 底部统计面板 (已隐藏，统计信息移至地图上方) -->
@@ -1568,6 +1725,187 @@
         e.stopPropagation();
       });
     });
+
+    // 地图图例：拖动 / 显隐 / 调宽
+    (function initMapLegendPanel() {
+      var LEGEND_STORAGE = 'plan-map-legend-v1';
+      var panel = document.getElementById('map-legend-panel');
+      var header = document.getElementById('map-legend-header');
+      var restoreBtn = document.getElementById('btn-legend-restore');
+      var hideBtn = document.getElementById('btn-legend-hide');
+      var toggleBodyBtn = document.getElementById('btn-legend-toggle-body');
+      var resizeW = document.getElementById('map-legend-resize-w');
+      var wrap = document.getElementById('map-wrap');
+      if (!panel || !header || !wrap) return;
+
+      function loadLegendState() {
+        try { return JSON.parse(localStorage.getItem(LEGEND_STORAGE)) || {}; } catch (e) { return {}; }
+      }
+      function saveLegendState(partial) {
+        var s = loadLegendState();
+        Object.keys(partial).forEach(function (k) { s[k] = partial[k]; });
+        localStorage.setItem(LEGEND_STORAGE, JSON.stringify(s));
+      }
+      function applyLegendState() {
+        var s = loadLegendState();
+        if (s.hidden) {
+          panel.classList.add('hidden');
+          restoreBtn.classList.add('visible');
+        } else {
+          panel.classList.remove('hidden');
+          restoreBtn.classList.remove('visible');
+        }
+        if (s.bodyCollapsed) panel.classList.add('body-collapsed');
+        else panel.classList.remove('body-collapsed');
+        if (typeof s.width === 'number') panel.style.width = Math.max(160, s.width) + 'px';
+        if (typeof s.left === 'number' && typeof s.top === 'number') {
+          panel.style.left = s.left + 'px';
+          panel.style.top = s.top + 'px';
+          panel.style.right = 'auto';
+          panel.style.bottom = 'auto';
+        } else if (s.bottom != null || s.right != null) {
+          panel.style.bottom = (s.bottom != null ? s.bottom : 20) + 'px';
+          panel.style.right = (s.right != null ? s.right : 20) + 'px';
+          panel.style.left = 'auto';
+          panel.style.top = 'auto';
+        }
+        updateToggleBodyLabel();
+      }
+      function updateToggleBodyLabel() {
+        if (!toggleBodyBtn) return;
+        toggleBodyBtn.textContent = panel.classList.contains('body-collapsed') ? '展开' : '折叠';
+      }
+      function clampLegendPanel() {
+        var pRect = wrap.getBoundingClientRect();
+        var w = panel.offsetWidth;
+        var h = panel.offsetHeight;
+        var left, top;
+        if (panel.style.left && panel.style.left !== 'auto') {
+          left = parseFloat(panel.style.left) || 0;
+          top = parseFloat(panel.style.top) || 0;
+        } else {
+          var rect = panel.getBoundingClientRect();
+          left = rect.left - pRect.left;
+          top = rect.top - pRect.top;
+          panel.style.left = left + 'px';
+          panel.style.top = top + 'px';
+          panel.style.right = 'auto';
+          panel.style.bottom = 'auto';
+        }
+        left = Math.max(0, Math.min(left, pRect.width - w));
+        top = Math.max(0, Math.min(top, pRect.height - h));
+        panel.style.left = left + 'px';
+        panel.style.top = top + 'px';
+        saveLegendState({ left: left, top: top, bottom: null, right: null });
+      }
+      function persistGeometry() {
+        var left = parseFloat(panel.style.left);
+        var top = parseFloat(panel.style.top);
+        var w = panel.offsetWidth;
+        var state = { width: w, hidden: panel.classList.contains('hidden'), bodyCollapsed: panel.classList.contains('body-collapsed') };
+        if (!isNaN(left) && panel.style.left !== 'auto') {
+          state.left = left;
+          state.top = top;
+          state.bottom = null;
+          state.right = null;
+        }
+        saveLegendState(state);
+      }
+
+      applyLegendState();
+
+      hideBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        panel.classList.add('hidden');
+        restoreBtn.classList.add('visible');
+        saveLegendState({ hidden: true });
+      });
+      restoreBtn.addEventListener('click', function () {
+        panel.classList.remove('hidden');
+        restoreBtn.classList.remove('visible');
+        saveLegendState({ hidden: false });
+        clampLegendPanel();
+      });
+      toggleBodyBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        panel.classList.toggle('body-collapsed');
+        updateToggleBodyLabel();
+        saveLegendState({ bodyCollapsed: panel.classList.contains('body-collapsed') });
+      });
+      header.addEventListener('dblclick', function (e) {
+        if (e.target.closest('.map-legend-btn')) return;
+        panel.classList.toggle('body-collapsed');
+        updateToggleBodyLabel();
+        saveLegendState({ bodyCollapsed: panel.classList.contains('body-collapsed') });
+      });
+
+      var dragStartX, dragStartY, dragOrigX, dragOrigY;
+      header.addEventListener('mousedown', function (e) {
+        if (e.target.closest('.map-legend-btn')) return;
+        dragStartX = e.clientX;
+        dragStartY = e.clientY;
+        var rect = panel.getBoundingClientRect();
+        var pRect = wrap.getBoundingClientRect();
+        dragOrigX = rect.left - pRect.left;
+        dragOrigY = rect.top - pRect.top;
+        panel.classList.add('dragging');
+        panel.style.left = dragOrigX + 'px';
+        panel.style.top = dragOrigY + 'px';
+        panel.style.right = 'auto';
+        panel.style.bottom = 'auto';
+        function onMove(ev) {
+          var pRect2 = wrap.getBoundingClientRect();
+          var newLeft = dragOrigX + (ev.clientX - dragStartX);
+          var newTop = dragOrigY + (ev.clientY - dragStartY);
+          newLeft = Math.max(0, Math.min(newLeft, pRect2.width - panel.offsetWidth));
+          newTop = Math.max(0, Math.min(newTop, pRect2.height - panel.offsetHeight));
+          panel.style.left = newLeft + 'px';
+          panel.style.top = newTop + 'px';
+        }
+        function onUp() {
+          panel.classList.remove('dragging');
+          persistGeometry();
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+        }
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+        e.preventDefault();
+      });
+
+      if (resizeW) {
+        var rwStartX, rwStartW;
+        resizeW.addEventListener('mousedown', function (e) {
+          rwStartX = e.clientX;
+          rwStartW = panel.offsetWidth;
+          panel.classList.add('resizing-w');
+          function onMove(ev) {
+            var pRect = wrap.getBoundingClientRect();
+            var curLeft = parseFloat(panel.style.left);
+            if (isNaN(curLeft) || panel.style.left === 'auto') {
+              var rect = panel.getBoundingClientRect();
+              curLeft = rect.left - pRect.left;
+            }
+            var delta = ev.clientX - rwStartX;
+            var newW = Math.max(160, Math.min(420, rwStartW + delta));
+            var maxW = pRect.width - curLeft - 4;
+            newW = Math.min(newW, maxW);
+            panel.style.width = newW + 'px';
+          }
+          function onUp() {
+            panel.classList.remove('resizing-w');
+            persistGeometry();
+            clampLegendPanel();
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+          }
+          document.addEventListener('mousemove', onMove);
+          document.addEventListener('mouseup', onUp);
+          e.preventDefault();
+          e.stopPropagation();
+        });
+      }
+    })();
   });
 })();
 </script>

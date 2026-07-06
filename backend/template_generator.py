@@ -59,16 +59,16 @@ BATCH_COLUMN_META: Dict[str, Dict[str, str]] = {
         "doc": "单位米；留空则按站点类型+制式+频段自动映射（推荐）",
     },
     "物理小区识别码": {
-        "required": "必填",
+        "required": "可选",
         "value_kind": "开放",
-        "enum_hint": "4G: 0-503；批量新建可填 -1 由规划分配",
-        "doc": "4G PCI，范围 0-503",
+        "enum_hint": "留空=规划分配；已有站填 0-503；锁定=是 时须填原 PCI",
+        "doc": "4G PCI。批量新建建议留空，规划结果在导出 xlsx 的 PCI 列",
     },
     "PCI": {
-        "required": "必填",
+        "required": "可选",
         "value_kind": "开放",
-        "enum_hint": "5G: 0-1007；批量新建可填 -1 由规划分配",
-        "doc": "5G PCI，范围 0-1007",
+        "enum_hint": "留空=规划分配；已有站填 0-1007；锁定=是 时须填原 PCI",
+        "doc": "5G PCI。批量新建建议留空，规划结果在导出 xlsx 的 PCI 列",
     },
     "TAC": {
         "required": "可选",
@@ -118,6 +118,12 @@ BATCH_COLUMN_META: Dict[str, Dict[str, str]] = {
         "enum_hint": "4G_4G | 4G_5G | 5G_4G | 5G_5G（多选用 | 连接）",
         "doc": "本行参与哪些邻区关系规划",
     },
+    "邻区得分阈值": {
+        "required": "可选",
+        "value_kind": "开放",
+        "enum_hint": "0 ~ 1，留空=0.5",
+        "doc": "本小区邻区规划最低得分；低于阈值的候选邻区丢弃（第一圈复用半径内仍强制保留）",
+    },
     "锁定": {
         "required": "可选",
         "value_kind": "枚举",
@@ -126,18 +132,41 @@ BATCH_COLUMN_META: Dict[str, Dict[str, str]] = {
     },
 }
 
+# 工参 sheet 第 2 行「取值/范围」说明（与表头列一一对应；上传解析会自动跳过此行）
+BATCH_RANGE_ROW: Dict[str, str] = {
+    "CGI": "MCC-MNC-基站ID-小区ID，如 460-00-123456-1",
+    "小区名称": "任意文本",
+    "网络制式": "4G 或 5G（亦支持 LTE / NR 等别名）",
+    "经度": "-180 ~ 180（WGS84）",
+    "纬度": "-90 ~ 90（WGS84）",
+    "方位角": "0 ~ 360（≥360 会模 360）",
+    "覆盖半径": "米，>0；留空则按站型+制式+频段映射",
+    "物理小区识别码": "留空=规划分配；4G：0–503；锁定=是 时填原 PCI",
+    "PCI": "留空=规划分配；5G：0–1007；锁定=是 时填原 PCI",
+    "TAC": "整数",
+    "详细使用频段": "频段描述（FDD900/F/D/A、Band3、700M/2.6G/4.9G 等），见「扇区参数映射表」",
+    "站点类型": "陆地 | 室内 | 近海 | 微站",
+    "所属基站名称": "站点名",
+    "扇区数": "1 | 2 | 3 | 4 | 5 | 6，默认 1",
+    "基方位角": "0–360，默认 0",
+    "规划类型": "宏站 | 微站 | 室分（不填则由站点类型推断）",
+    "邻区规划": "4G_4G | 4G_5G | 5G_4G | 5G_5G，多选用 | 连接",
+    "邻区得分阈值": "0 ~ 1 小数，如 0.5；留空默认 0.5",
+    "锁定": "是 | 否（是=不参与 PCI 重分配）",
+}
+
 LTE_COLUMNS_BASE = [
     "CGI", "小区名称", "网络制式", "经度", "纬度",
     "方位角", "覆盖半径", "物理小区识别码", "TAC",
     "详细使用频段", "站点类型", "所属基站名称",
-    "扇区数", "基方位角", "规划类型", "邻区规划", "锁定",
+    "扇区数", "基方位角", "规划类型", "邻区规划", "邻区得分阈值", "锁定",
 ]
 
 NR_COLUMNS_BASE = [
     "CGI", "小区名称", "网络制式", "经度", "纬度",
     "方位角", "覆盖半径", "PCI", "TAC",
     "详细使用频段", "站点类型", "所属基站名称",
-    "扇区数", "基方位角", "规划类型", "邻区规划", "锁定",
+    "扇区数", "基方位角", "规划类型", "邻区规划", "邻区得分阈值", "锁定",
 ]
 
 # 兼容旧引用
@@ -154,6 +183,10 @@ def _header_label(logical_name: str) -> str:
 
 def _headers_for_columns(base_columns: List[str]) -> List[str]:
     return [_header_label(c) for c in base_columns]
+
+
+def _range_row_values(base_columns: List[str]) -> List[str]:
+    return [BATCH_RANGE_ROW.get(c, "") for c in base_columns]
 
 
 def _logical_name_from_header(header: str) -> str:
@@ -187,6 +220,28 @@ def _style_template_sheet(ws, base_columns: List[str]) -> None:
         ws.column_dimensions[letter].width = 24 if logical in wide_cols else 16
 
     ws.row_dimensions[1].height = 40
+
+
+def _style_range_row(ws, base_columns: List[str]) -> None:
+    """第 2 行：各列取值/范围说明"""
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    fill = PatternFill("solid", fgColor="F0F2F5")
+    font = Font(size=9, color="404040", italic=True)
+    align = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    for col_idx, logical in enumerate(base_columns, start=1):
+        cell = ws.cell(row=2, column=col_idx)
+        cell.value = BATCH_RANGE_ROW.get(logical, "")
+        cell.font = font
+        cell.fill = fill
+        cell.alignment = align
+    ws.row_dimensions[2].height = 52
+
+
+def _insert_range_row_after_header(ws, base_columns: List[str]) -> None:
+    """在表头下插入取值说明行（示例数据从第 3 行起）"""
+    ws.insert_rows(2)
+    _style_range_row(ws, base_columns)
 
 
 def _sample_rows():
@@ -409,21 +464,31 @@ def _legend_rows(rat: str) -> List[Tuple[str, str, str]]:
         ),
         (
             "与 data_parser 一致",
-            f"必填列: CGI、小区名称、网络制式、经度、纬度、方位角、{pci_col}",
+            "必填列: CGI、小区名称、网络制式、经度、纬度、方位角",
+            "",
+        ),
+        (
+            "PCI 列（可选）",
+            f"{pci_col} 可不填，由规划写入导出表；锁定=是 时填写原 PCI 以保留",
             "",
         ),
         ("", "强烈建议填: 详细使用频段（用于扇区半径/波束映射）", ""),
+        (
+            "第 2 行",
+            "各列「取值/范围」说明行；上传批量规划时会自动跳过，勿删表头",
+            "",
+        ),
     ]
     if rat in ("5G", "both"):
         rows.append((
             "5G 工参 sheet",
-            "PCI[必填][开放] 列为 5G 物理小区 ID（0–1007）；示例网络制式填 5G",
+            "PCI[可选][开放]：新建留空由规划分配（0–1007）；锁定=是 时填原 PCI；结果见导出 xlsx",
             "",
         ))
     if rat in ("4G", "both"):
         rows.append((
             "4G 工参 sheet",
-            "物理小区识别码[必填][开放] 列为 4G PCI（0–503）；示例网络制式填 4G",
+            "物理小区识别码[可选][开放]：新建留空由规划分配（0–503）；锁定=是 时填原 PCI；结果见导出 xlsx",
             "",
         ))
     return rows
@@ -471,6 +536,7 @@ def generate_template(rat: str = "both") -> bytes:
             df_4g.columns = _headers_for_columns(LTE_COLUMNS_BASE)
             df_4g.to_excel(writer, sheet_name="4G工参模板", index=False)
             _style_template_sheet(writer.sheets["4G工参模板"], LTE_COLUMNS_BASE)
+            _insert_range_row_after_header(writer.sheets["4G工参模板"], LTE_COLUMNS_BASE)
 
         if rat in ("5G", "both"):
             df_5g = pd.DataFrame(
@@ -480,6 +546,7 @@ def generate_template(rat: str = "both") -> bytes:
             df_5g.columns = _headers_for_columns(NR_COLUMNS_BASE)
             df_5g.to_excel(writer, sheet_name="5G工参模板", index=False)
             _style_template_sheet(writer.sheets["5G工参模板"], NR_COLUMNS_BASE)
+            _insert_range_row_after_header(writer.sheets["5G工参模板"], NR_COLUMNS_BASE)
 
         pd.DataFrame(_legend_rows(rat), columns=["标识", "含义", "备注"]).to_excel(
             writer, sheet_name="表头图例", index=False

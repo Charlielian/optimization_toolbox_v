@@ -840,15 +840,77 @@ const MapManager = {
   _nbrScoreMin: 0,
   _nbrScoreType: 'all',
 
-  setNbrScoreFilter(minScore, type) {
-    this._nbrScoreMin = minScore;
-    this._nbrScoreType = type;
+  /** @param {number} minScoreCenti 滑块值 0–100，表示 ≥ minScoreCenti/100 */
+  setNbrScoreFilter(minScoreCenti, type) {
+    this._nbrScoreMin = minScoreCenti;
+    this._nbrScoreType = type || 'all';
     this._applyNbrScoreFilter();
   },
 
   _applyNbrScoreFilter() {
-    if (!this._lastNbrData) return;
+    if (!this._lastNbrData) {
+      this._updateNbrScoreCountUI(null);
+      return;
+    }
     this.renderNeighborsByType(this._lastPlannedEcgis, this._lastNbrData, true);
+  },
+
+  /** 与 renderNeighborsByType 相同过滤规则，统计可绘制的邻区条数 */
+  _countNbrLinksByFilter(nbrByType, scoreMin, scoreType) {
+    const types = ['4G_4G', '4G_5G', '5G_4G', '5G_5G'];
+    const byType = { '4G_4G': 0, '4G_5G': 0, '5G_4G': 0, '5G_5G': 0 };
+    let total = 0;
+    if (!nbrByType) return { byType, total };
+
+    types.forEach(t => {
+      (nbrByType[t] || []).forEach(n => {
+        const score = n.score || 0;
+        if (scoreType !== 'all' && t !== scoreType) return;
+        if (score < scoreMin) return;
+        const src = this.cellIndex.get(n.src_ecgi);
+        const dst = this.cellIndex.get(n.dst_ecgi);
+        if (!src || !dst) return;
+        byType[t]++;
+        total++;
+      });
+    });
+    return { byType, total };
+  },
+
+  _updateNbrScoreCountUI(stats) {
+    const el = document.getElementById('nbr-score-counts');
+    if (!el) return;
+
+    const typeLabels = {
+      '4G_4G': '4G↔4G',
+      '4G_5G': '4G↔5G',
+      '5G_4G': '5G↔4G',
+      '5G_5G': '5G↔5G',
+    };
+    const typeColors = this.NBR_TYPE_COLORS || {};
+
+    if (!stats || !this._lastNbrData) {
+      el.innerHTML = '<span class="nbr-count-empty">—</span>';
+      return;
+    }
+
+    const scoreType = this._nbrScoreType || 'all';
+    const types = scoreType === 'all'
+      ? ['4G_4G', '4G_5G', '5G_4G', '5G_5G']
+      : [scoreType];
+
+    const parts = types.map(t => {
+      const n = stats.byType[t] || 0;
+      const color = typeColors[t] || '#94a3b8';
+      const label = typeLabels[t] || t;
+      return `<span class="nbr-count-item" title="${label} 邻区条数"><span class="nbr-count-dot" style="background:${color}"></span>${label} <b>${n}</b></span>`;
+    });
+
+    const totalHtml = scoreType === 'all'
+      ? `<span class="nbr-count-total" title="当前得分阈值下合计">合计 <b>${stats.total}</b></span>`
+      : `<span class="nbr-count-total" title="当前类型与得分阈值下">显示 <b>${stats.total}</b></span>`;
+
+    el.innerHTML = totalHtml + parts.join('');
   },
 
   _getNbrScoreRange(nbrByType) {
@@ -895,18 +957,20 @@ const MapManager = {
       // 初始化滑块: max = 当前最大值, value = 当前最小值 (动态读取规划邻区的最小得分)
       const slider = document.getElementById('nbr-score-min');
       if (slider) {
-        slider.max = Math.ceil(range.max * 100);
+        slider.max = Math.max(100, Math.ceil(range.max * 100));
         // 单站规划/局部规划: 滑块起始 = 实际最小值, 自动过滤掉"被规划算法筛掉"的低分噪声
         // 全网规划: range.min 通常是 0 (含所有弱邻区), 此时保持 0 以便查看全部
         const initMin = range.min > 0.01 ? Math.floor(range.min * 100) : 0;
         slider.value = initMin;
         document.getElementById('nbr-score-min-label').textContent = `≥${(initMin / 100).toFixed(2)}`;
         this._nbrScoreMin = initMin;
+        const typeSel = document.getElementById('nbr-score-type');
+        if (typeSel) this._nbrScoreType = typeSel.value || 'all';
       }
     }
 
-    const scoreMin = this._nbrScoreMin / 100;
-    const scoreType = this._nbrScoreType;
+    const scoreMin = (this._nbrScoreMin || 0) / 100;
+    const scoreType = this._nbrScoreType || 'all';
     const types = ['4G_4G', '4G_5G', '5G_4G', '5G_5G'];
 
     types.forEach(t => {
@@ -965,6 +1029,9 @@ const MapManager = {
         );
       });
     });
+
+    const stats = this._countNbrLinksByFilter(nbrByType, scoreMin, scoreType);
+    this._updateNbrScoreCountUI(stats);
 
     this._rebuildNbrTypeControl();
   },

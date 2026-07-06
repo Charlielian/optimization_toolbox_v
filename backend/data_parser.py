@@ -7,7 +7,7 @@ from __future__ import annotations
 import io
 import math
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -114,6 +114,10 @@ FIELD_ALIASES: Dict[str, str] = {
     "nbr_plan_types": "nbr_plan_types",
     "锁定": "locked",
     "locked": "locked",
+    "邻区得分阈值": "nbr_score_threshold",
+    "得分阈值": "nbr_score_threshold",
+    "邻区阈值": "nbr_score_threshold",
+    "score_threshold": "nbr_score_threshold",
 }
 
 # 内部标准字段
@@ -123,7 +127,7 @@ STD_FIELDS = [
     "oms_name",
     "site_type", "freq_band_raw", "freq_band", "freq_band_label", "plan_freq_band",
     "bandwidth", "beam", "beamwidth", "pci_missing", "cell_id",
-    "n_sectors", "plan_site_type", "base_azimuth", "locked",
+    "n_sectors", "plan_site_type", "base_azimuth", "locked", "nbr_score_threshold",
     "neighbors_json", "updated_at",
 ]
 
@@ -239,6 +243,16 @@ def _coerce_value(field: str, value: Any) -> Tuple[Any, str]:
     if field == "nbr_plan_types":
         # 字符串以 | 或 , 分隔
         return sval, ""
+    if field == "nbr_score_threshold":
+        if not sval:
+            return None, ""
+        try:
+            t = float(sval)
+            if not (0.0 <= t <= 1.0):
+                return None, f"邻区得分阈值越界(0-1): {t}"
+            return round(t, 4), ""
+        except (ValueError, TypeError):
+            return None, f"邻区得分阈值非数字: {sval}"
     if field == "locked":
         if isinstance(value, bool):
             return value, ""
@@ -317,8 +331,20 @@ def parse_work_params(file_bytes: bytes, filename: str) -> Dict[str, Any]:
 
     df = _normalize_columns(df)
 
-    # 必填列: radius/freq_band_raw 改为可选 (由频段映射自动填补)
-    missing = [f for f in ("ecgi", "name", "rat", "lon", "lat", "azimuth", "pci") if f not in df.columns]
+    # 批量模板第 2 行为「取值/范围」说明，上传时跳过（勿当数据行）
+    if len(df) > 0:
+        first = df.iloc[0]
+        ecgi_val = str(first.get("ecgi", "") or "").strip()
+        rat_val = str(first.get("rat", "") or "").strip()
+        if ecgi_val.startswith("MCC-MNC") or (
+            rat_val
+            and rat_val not in ("LTE", "NR", "4G", "5G")
+            and not any(ch.isdigit() for ch in rat_val[:3])
+        ):
+            df = df.iloc[1:].reset_index(drop=True)
+
+    # 必填列: pci 可选（批量新建留空/-1，由 PCI 规划写入 new_pci 后导出）
+    missing = [f for f in ("ecgi", "name", "rat", "lon", "lat", "azimuth") if f not in df.columns]
     if missing:
         return {
             "valid_cells": [],
@@ -358,6 +384,8 @@ def parse_work_params(file_bytes: bytes, filename: str) -> Dict[str, Any]:
                 elif f == "plan_site_type":
                     cell[f] = None
                 elif f == "nbr_plan_types":
+                    cell[f] = None
+                elif f == "nbr_score_threshold":
                     cell[f] = None
                 elif f == "locked":
                     cell[f] = False
@@ -469,6 +497,324 @@ def describe_file_rat_profile(
         "nr": nr,
         "valid": valid,
     }
+
+
+# 文件批量更新：仅 cgi + pci / tac / earfcn（空单元格表示不修改该字段）
+BULK_UPDATE_FIELDS = ("ecgi", "pci", "tac", "earfcn")
+_BULK_UPDATE_ALIASES: Dict[str, str] = {
+    **{k: v for k, v in FIELD_ALIASES.items() if v in BULK_UPDATE_FIELDS},
+    "cgi": "ecgi",
+    "CGI": "ecgi",
+    "ecgi": "ecgi",
+    "ECGI": "ecgi",
+    "pci": "pci",
+    "PCI": "pci",
+    "tac": "tac",
+    "TAC": "tac",
+    "earfcn": "earfcn",
+    "EARFCN": "earfcn",
+    "频点": "earfcn",
+}
+
+
+def normalize_ecgi_key(ecgi: Any) -> str:
+    """工参关联键：去首尾空白，合并连续空白。"""
+    if ecgi is None:
+        return ""
+    s = str(ecgi).strip()
+    if not s:
+        return ""
+    return re.sub(r"\s+", "", s)
+
+
+def _normalize_bulk_update_columns(df: pd.DataFrame) -> pd.DataFrame:
+    new_cols: Dict[str, str] = {}
+    for c in df.columns:
+        if c is None:
+            continue
+        cleaned = _strip_template_header_label(str(c).strip())
+        if cleaned in _BULK_UPDATE_ALIASES:
+            new_cols[c] = _BULK_UPDATE_ALIASES[cleaned]
+            continue
+        cleaned2 = re.sub(r"[\s()()\[\]【】:：]", "", cleaned)
+        for k, v in _BULK_UPDATE_ALIASES.items():
+            if re.sub(r"[\s()()\[\]【】:：]", "", k) == cleaned2:
+                new_cols[c] = v
+                break
+    renamed = df.rename(columns=new_cols)
+    if renamed.columns.duplicated().any():
+        groups: Dict[str, List[str]] = {}
+        for col in renamed.columns:
+            groups.setdefault(col, []).append(col)
+        merged_data: Dict[str, pd.Series] = {}
+        seen_order: List[str] = []
+        for col, srcs in groups.items():
+            if col not in merged_data:
+                seen_order.append(col)
+            if len(srcs) == 1:
+                merged_data[col] = renamed[col].copy()
+            else:
+                stack = renamed[srcs]
+
+                def _pick_row(row: pd.Series) -> Any:
+                    for v in row:
+                        if v is not None and not (isinstance(v, float) and pd.isna(v)) and str(v).strip() != "":
+                            return v
+                    return row.iloc[0]
+
+                merged_data[col] = stack.apply(_pick_row, axis=1)
+        renamed = pd.DataFrame(merged_data, index=renamed.index)[seen_order]
+    return renamed
+
+
+def _parse_optional_int_field(field: str, value: Any, rat: Optional[str]) -> Tuple[Optional[int], Optional[str]]:
+    """解析批量更新中的可选整数字段；空值返回 (None, None) 表示跳过更新。"""
+    if value is None:
+        return None, None
+    if isinstance(value, float) and math.isnan(value):
+        return None, None
+    sval = str(value).strip()
+    if sval == "" or sval.lower() in ("nan", "null", "none", "-", "—"):
+        return None, None
+    try:
+        num = int(float(sval))
+    except (ValueError, TypeError):
+        return None, f"{field} 非数字: {sval}"
+    if field == "pci":
+        if num < 0:
+            return -1, None
+        if rat in PCI_RANGE:
+            lo, hi = PCI_RANGE[rat]
+            if not (lo <= num <= hi):
+                return None, f"PCI {num} 超出{rat}范围({lo}-{hi})"
+        elif rat is None:
+            if num > 1007:
+                return None, f"PCI {num} 超出常见范围"
+        return num, None
+    if field == "tac":
+        if num < 0 or num > 0xFFFF:
+            return None, f"TAC 越界: {num}"
+        return num, None
+    if field == "earfcn":
+        return num, None
+    return num, None
+
+
+def parse_bulk_sector_updates(file_bytes: bytes, filename: str) -> Dict[str, Any]:
+    """
+    解析「按 CGI 批量更新 PCI/TAC/EARFCN」文件 (csv/xlsx/xls)。
+    返回:
+      success, error?,
+      rows: [{ecgi, pci?, tac?, earfcn?}],  # 仅包含文件中非空待更新字段
+      invalid_rows, stats
+    """
+    fname = (filename or "").lower()
+    try:
+        if fname.endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(file_bytes), dtype=str, keep_default_na=False)
+        elif fname.endswith(".xls"):
+            df = pd.read_excel(io.BytesIO(file_bytes), dtype=str, keep_default_na=False, engine="xlrd")
+        else:
+            df = pd.read_excel(io.BytesIO(file_bytes), dtype=str, keep_default_na=False, engine="openpyxl")
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"文件读取失败: {e}",
+            "rows": [],
+            "invalid_rows": [],
+            "stats": {"total": 0, "valid": 0, "invalid": 0},
+        }
+
+    df = _normalize_bulk_update_columns(df)
+    if "ecgi" not in df.columns:
+        return {
+            "success": False,
+            "error": "缺少 CGI/ECGI 列（表头可为 cgi、CGI、ECGI、小区ID 等）",
+            "rows": [],
+            "invalid_rows": [],
+            "stats": {"total": 0, "valid": 0, "invalid": 0},
+        }
+
+    if len(df) > 0:
+        first = df.iloc[0]
+        ecgi_val = str(first.get("ecgi", "") or "").strip()
+        if ecgi_val.startswith("MCC-MNC") or ecgi_val.upper() in ("CGI", "ECGI", "示例"):
+            df = df.iloc[1:].reset_index(drop=True)
+
+    valid_rows: List[Dict[str, Any]] = []
+    invalid: List[Dict[str, Any]] = []
+
+    for idx, row in df.iterrows():
+        ecgi = normalize_ecgi_key(row.get("ecgi"))
+        if not ecgi:
+            invalid.append({
+                "row": int(idx) + 2,
+                "ecgi": "",
+                "errors": ["CGI/ECGI 为空"],
+            })
+            continue
+
+        entry: Dict[str, Any] = {"ecgi": ecgi}
+        row_errors: List[str] = []
+
+        if "pci" in df.columns:
+            pci, err = _parse_optional_int_field("pci", row.get("pci"), None)
+            if err:
+                row_errors.append(err)
+            elif pci is not None:
+                entry["pci"] = pci
+
+        if "tac" in df.columns:
+            tac, err = _parse_optional_int_field("tac", row.get("tac"), None)
+            if err:
+                row_errors.append(err)
+            elif tac is not None:
+                entry["tac"] = tac
+
+        if "earfcn" in df.columns:
+            earfcn, err = _parse_optional_int_field("earfcn", row.get("earfcn"), None)
+            if err:
+                row_errors.append(err)
+            elif earfcn is not None:
+                entry["earfcn"] = earfcn
+
+        if row_errors:
+            invalid.append({"row": int(idx) + 2, "ecgi": ecgi, "errors": row_errors})
+            continue
+
+        if len(entry) <= 1:
+            invalid.append({
+                "row": int(idx) + 2,
+                "ecgi": ecgi,
+                "errors": ["pci/tac/earfcn 至少填写一项"],
+            })
+            continue
+
+        valid_rows.append(entry)
+
+    return {
+        "success": True,
+        "rows": valid_rows,
+        "invalid_rows": invalid,
+        "stats": {
+            "total": int(len(df)),
+            "valid": len(valid_rows),
+            "invalid": len(invalid),
+        },
+    }
+
+
+def apply_bulk_sector_updates(
+    cells: List[Dict[str, Any]],
+    update_rows: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    按 ECGI 关联更新内存工参中的 pci / tac / earfcn。
+    返回 updated, not_found, skipped_duplicate_ecgi, updated_ecgis, not_found_ecgis
+    """
+    from datetime import datetime
+
+    index: Dict[str, int] = {}
+    for i, c in enumerate(cells):
+        key = normalize_ecgi_key(c.get("ecgi"))
+        if key and key not in index:
+            index[key] = i
+
+    updated = 0
+    not_found: List[str] = []
+    seen_file_ecgi: Dict[str, int] = {}
+    skipped_duplicate = 0
+    skipped_pci_invalid = 0
+    updated_ecgis: List[str] = []
+    ts = datetime.utcnow().isoformat(timespec="seconds")
+
+    for row in update_rows:
+        key = normalize_ecgi_key(row.get("ecgi"))
+        if not key:
+            continue
+        if key in seen_file_ecgi:
+            skipped_duplicate += 1
+            continue
+        seen_file_ecgi[key] = 1
+
+        idx = index.get(key)
+        if idx is None:
+            not_found.append(key)
+            continue
+
+        cell = cells[idx]
+        rat = cell.get("rat")
+        changed = False
+
+        if "pci" in row:
+            pci = row["pci"]
+            pci_ok = True
+            if pci is not None and pci >= 0 and rat in PCI_RANGE:
+                lo, hi = PCI_RANGE[rat]
+                if not (lo <= pci <= hi):
+                    pci_ok = False
+                    skipped_pci_invalid += 1
+            if pci_ok:
+                cell["pci"] = pci
+                if pci is not None and pci >= 0:
+                    cell["pci_missing"] = False
+                    cell["new_pci"] = pci
+                elif pci == -1:
+                    cell["pci_missing"] = True
+                changed = True
+
+        if "tac" in row:
+            cell["tac"] = row["tac"]
+            changed = True
+
+        if "earfcn" in row:
+            earfcn = row["earfcn"]
+            cell["earfcn"] = earfcn
+            if earfcn is not None and rat:
+                guessed = _guess_freq_band(rat, earfcn)
+                if guessed and guessed != "未知":
+                    cell["freq_band"] = guessed
+            changed = True
+
+        if changed:
+            cell["updated_at"] = ts
+            cell.pop("pci_synced_at", None)
+            updated += 1
+            updated_ecgis.append(key)
+
+    return {
+        "updated": updated,
+        "not_found": not_found,
+        "not_found_count": len(not_found),
+        "skipped_duplicate_ecgi": skipped_duplicate,
+        "skipped_pci_invalid": skipped_pci_invalid,
+        "updated_ecgis": updated_ecgis[:500],
+        "not_found_ecgis": not_found[:500],
+    }
+
+
+def generate_bulk_sector_update_template() -> bytes:
+    """生成 4 列更新模板 xlsx（含说明行）。"""
+    import openpyxl
+    from openpyxl.utils import get_column_letter
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "更新清单"
+    headers = ["cgi", "pci", "tac", "earfcn"]
+    ws.append(headers)
+    ws.append([
+        "MCC-MNC-eNB/gNB-CellId（与工参 ECGI 一致）",
+        "物理小区ID，空表示不修改",
+        "跟踪区码，空表示不修改",
+        "频点/ARFCN，空表示不修改",
+    ])
+    ws.append(["460-00-123456-1", "100", "12345", "38400"])
+    for i, h in enumerate(headers, 1):
+        ws.column_dimensions[get_column_letter(i)].width = max(14, len(h) + 4)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 def _guess_freq_band(rat: str, earfcn: Any) -> str:

@@ -9,6 +9,8 @@
   let currentSheets = [];       // YAML/数据库配置的sheet
   let excelSheets = [];         // 当前文件的Excel sheet解析结果
   let currentTables = [];
+  /** @type {Set<string>} 批量删除选中的表（display_name，不含 cfg_ 前缀） */
+  let selectedTableNames = new Set();
   let currentDataTable = '';
   let currentDataPage = 1;
   let currentConfigSheet = '';  // 当前配置的sheet名
@@ -674,9 +676,48 @@
     });
   }
 
+  function getFilteredTables(tables) {
+    const keyword = (document.getElementById('tables-search').value || '').toLowerCase();
+    return (tables || []).filter(t =>
+      t.table_name.toLowerCase().includes(keyword) ||
+      t.display_name.toLowerCase().includes(keyword)
+    );
+  }
+
+  function updateTablesBatchBar(filtered) {
+    const bar = document.getElementById('tables-batch-bar');
+    const countEl = document.getElementById('tables-selected-count');
+    const btnDel = document.getElementById('btn-batch-delete-tables');
+    const selectAll = document.getElementById('tables-select-all-page');
+    if (!bar) return;
+
+    const hasTables = filtered && filtered.length > 0;
+    bar.style.display = hasTables ? 'flex' : 'none';
+    const n = selectedTableNames.size;
+    if (countEl) countEl.textContent = `已选 ${n} 项`;
+    if (btnDel) {
+      btnDel.disabled = n === 0;
+    }
+    if (selectAll && filtered) {
+      const names = filtered.map(t => t.display_name);
+      const allOnPage = names.length > 0 && names.every(name => selectedTableNames.has(name));
+      const someOnPage = names.some(name => selectedTableNames.has(name));
+      selectAll.checked = allOnPage;
+      selectAll.indeterminate = !allOnPage && someOnPage;
+    }
+  }
+
+  function toggleTableSelection(displayName, checked) {
+    if (checked) selectedTableNames.add(displayName);
+    else selectedTableNames.delete(displayName);
+    renderTables(currentTables);
+  }
+
   function renderTables(tables) {
     const list = document.getElementById('tables-list');
     if (!tables || tables.length === 0) {
+      selectedTableNames.clear();
+      updateTablesBatchBar([]);
       list.innerHTML = `
         <div class="empty-state">
           <div class="icon">📊</div>
@@ -686,17 +727,38 @@
       return;
     }
 
-    const keyword = (document.getElementById('tables-search').value || '').toLowerCase();
-    const filtered = tables.filter(t =>
-      t.table_name.toLowerCase().includes(keyword) ||
-      t.display_name.toLowerCase().includes(keyword)
-    );
+    const filtered = getFilteredTables(tables);
+    // 去掉已不存在的选中项
+    const validNames = new Set(tables.map(t => t.display_name));
+    selectedTableNames.forEach(name => {
+      if (!validNames.has(name)) selectedTableNames.delete(name);
+    });
 
-    list.innerHTML = filtered.map(t => `
-      <div class="table-card">
+    if (filtered.length === 0) {
+      list.innerHTML = `
+        <div class="empty-state">
+          <div class="icon">🔍</div>
+          <div class="text">没有匹配的表</div>
+        </div>
+      `;
+      updateTablesBatchBar(filtered);
+      return;
+    }
+
+    list.innerHTML = filtered.map(t => {
+      const dn = t.display_name;
+      const checked = selectedTableNames.has(dn);
+      const safeDn = escapeHtml(dn);
+      const attrDn = escapeAttr(dn);
+      return `
+      <div class="table-card ${checked ? 'selected' : ''}" data-table-name="${attrDn}">
+        <div class="table-check">
+          <input type="checkbox" class="table-row-check" data-name="${attrDn}" ${checked ? 'checked' : ''}
+            aria-label="选择 ${safeDn}" />
+        </div>
         <div class="table-icon">📋</div>
         <div class="table-info">
-          <div class="table-name">${t.display_name}</div>
+          <div class="table-name">${safeDn}</div>
           <div class="table-meta">
             <span>${t.row_count || 0} 行</span>
             <span>${t.column_count || 0} 列</span>
@@ -704,11 +766,26 @@
           </div>
         </div>
         <div class="table-actions">
-          <button class="btn btn-small" onclick="viewTableData('${t.display_name}')">查看</button>
-          <button class="btn btn-small btn-danger" onclick="deleteTable('${t.display_name}')">删除</button>
+          <button class="btn btn-small btn-view-table" data-name="${attrDn}">查看</button>
+          <button class="btn btn-small btn-danger btn-del-table" data-name="${attrDn}">删除</button>
         </div>
       </div>
-    `).join('');
+    `;
+    }).join('');
+
+    list.querySelectorAll('.table-row-check').forEach(cb => {
+      cb.addEventListener('change', function () {
+        toggleTableSelection(this.dataset.name, this.checked);
+      });
+    });
+    list.querySelectorAll('.btn-view-table').forEach(btn => {
+      btn.addEventListener('click', () => viewTableData(btn.dataset.name));
+    });
+    list.querySelectorAll('.btn-del-table').forEach(btn => {
+      btn.addEventListener('click', () => deleteTable(btn.dataset.name));
+    });
+
+    updateTablesBatchBar(filtered);
   }
 
   document.getElementById('btn-refresh-tables').addEventListener('click', loadTables);
@@ -716,11 +793,64 @@
     renderTables(currentTables);
   });
 
+  const tablesSelectAllPage = document.getElementById('tables-select-all-page');
+  if (tablesSelectAllPage) {
+    tablesSelectAllPage.addEventListener('change', function () {
+      const filtered = getFilteredTables(currentTables);
+      filtered.forEach(t => {
+        if (this.checked) selectedTableNames.add(t.display_name);
+        else selectedTableNames.delete(t.display_name);
+      });
+      renderTables(currentTables);
+    });
+  }
+
+  const btnBatchDeleteTables = document.getElementById('btn-batch-delete-tables');
+  if (btnBatchDeleteTables) {
+    btnBatchDeleteTables.addEventListener('click', batchDeleteTables);
+  }
+
+  async function batchDeleteTables() {
+    const names = Array.from(selectedTableNames);
+    if (names.length === 0) {
+      log('请先勾选要删除的表', 'warn');
+      return;
+    }
+    const preview = names.length <= 5
+      ? names.join('、')
+      : `${names.slice(0, 5).join('、')} 等 ${names.length} 个表`;
+    if (!confirm(`确定批量删除以下数据表吗？此操作不可恢复。\n\n${preview}`)) return;
+
+    const btn = document.getElementById('btn-batch-delete-tables');
+    btn.classList.add('btn-loading');
+    btn.disabled = true;
+    try {
+      const res = await API.configBatchDeleteTables(names);
+      const deleted = res.deleted || [];
+      deleted.forEach(n => selectedTableNames.delete(n));
+      if (res.failed && res.failed.length) {
+        log(res.message || `部分删除失败 (${res.failed.length})`, 'warn');
+        res.failed.forEach(f => log(`删除失败: ${f.table_name} - ${f.error}`, 'error'));
+      } else {
+        log(res.message || `已删除 ${deleted.length} 个表`, 'success');
+      }
+      loadTables();
+      loadHistory();
+    } catch (err) {
+      log('批量删除失败: ' + err.message, 'error');
+    } finally {
+      btn.classList.remove('btn-loading');
+      btn.disabled = selectedTableNames.size === 0;
+    }
+  }
+
   window.deleteTable = function (tableName) {
     if (!confirm(`确定删除表 ${tableName} 吗？此操作不可恢复。`)) return;
     API.configDeleteTable(tableName).then(() => {
+      selectedTableNames.delete(tableName);
       log(`已删除表: ${tableName}`, 'success');
       loadTables();
+      loadHistory();
     }).catch(err => {
       log('删除失败: ' + err.message, 'error');
     });
@@ -1348,5 +1478,9 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
+  }
+
+  function escapeAttr(str) {
+    return escapeHtml(str).replace(/`/g, '&#96;');
   }
 })();
