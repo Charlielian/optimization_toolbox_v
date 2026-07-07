@@ -303,6 +303,55 @@ def _validate_cell(cell: Dict[str, Any]) -> List[str]:
     return errors
 
 
+def _read_xlsx_to_dataframe(file_bytes: bytes) -> pd.DataFrame:
+    """openpyxl read_only 流式读 xlsx，降低大文件峰值内存。
+
+    容错：某些特殊导出的Excel（如带水印、特定软件导出）在 read_only 模式
+    下只能读到1列1行，此时自动回退到普通加载模式。
+    """
+    import openpyxl
+
+    def _ws_to_df(ws) -> pd.DataFrame:
+        rows_iter = ws.iter_rows(values_only=True)
+        header = next(rows_iter, None)
+        if not header:
+            return pd.DataFrame()
+        columns = [str(c).strip() if c is not None else "" for c in header]
+        data: List[List[Any]] = []
+        for row in rows_iter:
+            data.append(list(row))
+        return pd.DataFrame(data, columns=columns)
+
+    # 先尝试 read_only 模式（大文件更省内存）
+    try:
+        wb = openpyxl.load_workbook(
+            io.BytesIO(file_bytes), read_only=True, data_only=True, keep_links=False,
+        )
+    except Exception:
+        wb = None
+
+    if wb is not None:
+        try:
+            ws = wb.active
+            df = _ws_to_df(ws)
+            # 正常的工参/网管文件至少有几列；如果 read_only 只读到1列且1行以内，
+            # 很可能是解析失败，需要回退到普通模式
+            if len(df.columns) > 1 or len(df) > 1:
+                return df
+        finally:
+            wb.close()
+
+    # 回退：普通加载模式（兼容性更好，但内存占用更高）
+    wb = openpyxl.load_workbook(
+        io.BytesIO(file_bytes), data_only=True, keep_links=False,
+    )
+    try:
+        ws = wb.active
+        return _ws_to_df(ws)
+    finally:
+        wb.close()
+
+
 def parse_work_params(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
     主入口:解析工参Excel/CSV
@@ -319,6 +368,8 @@ def parse_work_params(file_bytes: bytes, filename: str) -> Dict[str, Any]:
             df = pd.read_csv(io.BytesIO(file_bytes), dtype=str, keep_default_na=False)
         elif fname.endswith(".xls"):
             df = pd.read_excel(io.BytesIO(file_bytes), dtype=str, keep_default_na=False, engine="xlrd")
+        elif fname.endswith(".xlsx"):
+            df = _read_xlsx_to_dataframe(file_bytes)
         else:
             df = pd.read_excel(io.BytesIO(file_bytes), dtype=str, keep_default_na=False, engine="openpyxl")
     except Exception as e:

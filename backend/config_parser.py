@@ -24,7 +24,62 @@ from config_imports import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["parse_config_excel", "parse_single_sheet", "apply_sheet_unique_keys"]
+__all__ = [
+    "parse_config_excel", "parse_single_sheet", "apply_sheet_unique_keys",
+    "load_workbook_safe", "list_excel_sheets",
+]
+
+
+def load_workbook_safe(
+    file_bytes: bytes,
+    data_only: bool = True,
+    keep_links: bool = False,
+) -> Any:
+    """安全加载 Excel workbook，read_only 失败时自动回退到普通模式。
+
+    某些特殊导出的 Excel（如带水印、特定软件导出）在 openpyxl read_only 模式
+    下只能读到极少行列，此时自动回退到普通加载模式以保证兼容性。
+    """
+    # 先尝试 read_only 模式（大文件更省内存）
+    wb = None
+    read_only_ok = False
+    try:
+        wb = openpyxl.load_workbook(
+            io.BytesIO(file_bytes),
+            read_only=True,
+            data_only=data_only,
+            keep_links=keep_links,
+        )
+    except Exception:
+        wb = None
+
+    if wb is not None:
+        try:
+            # 简单检查：第一个 sheet 的第一行列数是否正常
+            if wb.sheetnames:
+                ws = wb[wb.sheetnames[0]]
+                first_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
+                # 空文件 或 列数 > 1，认为 read_only 可用
+                if first_row is None or len(first_row) > 1:
+                    read_only_ok = True
+        except Exception:
+            read_only_ok = False
+
+        if read_only_ok:
+            return wb
+        else:
+            # read_only 模式不可用，关闭后回退
+            try:
+                wb.close()
+            except Exception:
+                pass
+
+    # 回退：普通加载模式（兼容性更好，但内存占用更高）
+    return openpyxl.load_workbook(
+        io.BytesIO(file_bytes),
+        data_only=data_only,
+        keep_links=keep_links,
+    )
 
 
 def apply_sheet_unique_keys(
@@ -300,7 +355,7 @@ def parse_config_excel(
         return result
 
     try:
-        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+        wb = load_workbook_safe(file_bytes, data_only=True)
     except Exception as e:
         result["error"] = f"Excel文件读取失败: {e}"
         logger.error(f"解析配置Excel失败: {filename}, {e}")
@@ -381,7 +436,7 @@ def list_excel_sheets(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     }
 
     try:
-        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True)
+        wb = load_workbook_safe(file_bytes, data_only=False)
         result["sheets"] = wb.sheetnames
         wb.close()
     except Exception as e:

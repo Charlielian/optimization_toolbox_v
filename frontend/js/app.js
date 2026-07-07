@@ -4,6 +4,18 @@ const App = {
   conflicts: [],
   stats: {},
   pciQualityByEcgi: {},
+  planDefaults: null,
+  /** 视口加载：当前屏内小区数；stats.total 为库内总数 */
+  mapViewportTruncated: false,
+  _cellsRefreshGen: 0,
+  _suppressViewportRefresh: false,
+  /** 单站规划完成后保留的展示上下文（视口刷新时合并工参，避免规划站/邻区被 renderCells 冲掉） */
+  _singleSitePlanSession: null,
+
+  _isPlannedTempEcgi(ecgi) {
+    const s = String(ecgi || '');
+    return s.startsWith('PLAN-') || s.startsWith('PLAN_');
+  },
 
   _qualityLabelColor(label) {
     const m = { 优: '#51cf66', 良: '#4dabf7', 一般: '#ffa94d', 偏差: '#ff922b', 需关注: '#ff6b6b' };
@@ -75,12 +87,75 @@ const App = {
 
   init() {
     MapManager.init('map');
+    MapManager.onViewportChange(() => {
+      if (this._suppressViewportRefresh) return;
+      this.refreshCellsViewport();
+    });
     this.bindEvents();
     this.log('系统就绪, 请上传工参或加载示例数据', 'info');
-    // 检查后端
     this.healthCheck();
-    // 自动从数据库恢复上次数据
+    this.loadPlanDefaults().catch(() => {});
     this.refreshCells();
+  },
+
+  /** 从服务端加载持久化规划默认参数，并写入规划页/PCI 页表单 */
+  async loadPlanDefaults() {
+    const r = await API.getPlanDefaults();
+    this.planDefaults = r.defaults || null;
+    this.applyPlanDefaultsToDom(this.planDefaults);
+    return this.planDefaults;
+  },
+
+  applyPlanDefaultsToDom(d) {
+    if (!d) return;
+    const pci = d.pci || {};
+    const nbr = d.neighbor || {};
+    const batch = d.batch || {};
+    const setVal = (id, v) => {
+      const el = document.getElementById(id);
+      if (el && v != null && v !== '') el.value = v;
+    };
+    const setChk = (id, v) => {
+      const el = document.getElementById(id);
+      if (el) el.checked = !!v;
+    };
+    const eng = pci.engine || 'legacy';
+    document.querySelectorAll('input[name="pci-engine"]').forEach((r) => {
+      r.checked = r.value === eng;
+    });
+    setVal('reuse-distance', pci.reuse_distance_km ?? 5);
+    setChk('check-mod6', pci.check_mod6);
+    setChk('check-mod30', pci.check_mod30 !== false);
+    setChk('directional-filter', pci.directional_filter !== false);
+    setChk('use-beam-overlap', pci.use_beam_overlap_score);
+    setVal('ss-score-threshold', nbr.single_score_threshold ?? 0.5);
+    const ssMode = document.getElementById('ss-plan-mode');
+    if (ssMode && batch.planning_mode) ssMode.value = batch.planning_mode;
+    const batchMode = document.getElementById('batch-plan-mode');
+    if (batchMode && batch.planning_mode) batchMode.value = batch.planning_mode;
+    const hidden = document.getElementById('plan-hidden-defaults');
+    if (hidden && !document.getElementById('plan-nbr-defaults')) {
+      const box = document.createElement('div');
+      box.id = 'plan-nbr-defaults';
+      box.setAttribute('aria-hidden', 'true');
+      box.style.display = 'none';
+      box.innerHTML = `
+        <input type="number" id="max-neighbors" value="${nbr.max_neighbors ?? 16}" />
+        <input type="number" id="max-distance" value="${nbr.max_distance_km ?? 5}" step="0.1" />
+        <input type="number" id="weight-distance" value="${nbr.weight_distance ?? 0.7}" step="0.05" />
+        <input type="number" id="weight-overlap" value="${nbr.weight_overlap ?? 0.3}" step="0.05" />
+        <input type="number" id="score-threshold" value="${nbr.score_threshold ?? 0.5}" step="0.05" />
+        <input type="checkbox" id="enable-cross-system" ${nbr.enable_cross_system !== false ? 'checked' : ''} />
+      `;
+      hidden.appendChild(box);
+    } else if (document.getElementById('max-neighbors')) {
+      setVal('max-neighbors', nbr.max_neighbors ?? 16);
+      setVal('max-distance', nbr.max_distance_km ?? 5);
+      setVal('weight-distance', nbr.weight_distance ?? 0.7);
+      setVal('weight-overlap', nbr.weight_overlap ?? 0.3);
+      setVal('score-threshold', nbr.score_threshold ?? 0.5);
+      setChk('enable-cross-system', nbr.enable_cross_system !== false);
+    }
   },
 
   async healthCheck() {
@@ -130,7 +205,12 @@ const App = {
       };
     });
     if ($('btn-reset-view')) $('btn-reset-view').onclick = () => {
-      if (this.cells.length) MapManager.fitBounds(this.cells);
+      this._suppressViewportRefresh = true;
+      MapManager.setDefaultView();
+      setTimeout(() => {
+        this._suppressViewportRefresh = false;
+        this.refreshCellsViewport();
+      }, 400);
     };
     if ($('btn-zoom-4g')) $('btn-zoom-4g').onclick = () => this._zoomToRat('LTE');
     if ($('btn-zoom-5g')) $('btn-zoom-5g').onclick = () => this._zoomToRat('NR');
@@ -235,6 +315,7 @@ const App = {
       $('pci-rat').onchange = () => {
         this._refreshPciFreqbandOptions();
         this._refreshPlanScope();
+        this.refreshCellsViewport();
         const area = MapManager.getCurrentArea?.();
         if (area) this._updatePciAreaInfo(area);
       };
@@ -417,7 +498,14 @@ const App = {
     const checkMod30 = !!document.getElementById('check-mod30')?.checked;
     const reuseKm = parseFloat(document.getElementById('reuse-distance')?.value || 5.0);
     const useBeam = !!document.getElementById('use-beam-overlap')?.checked;
-    const scoreThreshold = parseFloat(document.getElementById('ss-score-threshold')?.value || 0.5);
+    const ssThrRaw = (document.getElementById('ss-score-threshold')?.value || '').trim();
+    const scoreThreshold = ssThrRaw === ''
+      ? undefined
+      : parseFloat(ssThrRaw);
+    if (scoreThreshold !== undefined && !Number.isFinite(scoreThreshold)) {
+      this.log('单站邻区得分阈值无效', 'error');
+      return;
+    }
     const planningMode = document.getElementById('ss-plan-mode')?.value || 'pci+nbr';
     const directionalFilter = !!document.getElementById('directional-filter')?.checked;
 
@@ -454,7 +542,7 @@ const App = {
       //   在地图上残留"规划站"集群, 视觉上与新规划站混淆
       const newPlannedSet = new Set(r.planned_ecgis);
       const beforeLen = this.cells.length;
-      this.cells = this.cells.filter(c => !String(c.ecgi || '').startsWith('PLAN-'));
+      this.cells = this.cells.filter(c => !this._isPlannedTempEcgi(c.ecgi));
       const removedStale = beforeLen - this.cells.length;
       if (removedStale > 0) {
         this.log(`[单站规划] 清理 ${removedStale} 个旧规划小区 (PLAN-*)`, 'info');
@@ -473,6 +561,13 @@ const App = {
       MapManager.renderNeighborsByType(plannedSet, r.nbr_by_type);
       this._lastPlannedEcgis = r.planned_ecgis;
       this._lastNbrTypes = nbrTypes;
+      this._singleSitePlanSession = {
+        center,
+        focusRadiusKm,
+        plannedEcgis: r.planned_ecgis,
+        plannedCells: r.planned_cells,
+        nbrByType: r.nbr_by_type,
+      };
       this._setStatusWithSectors();
       this.log(`[单站规划] 完成: ${r.planned_ecgis.length} 扇区, 邻区 ${JSON.stringify(r.nbr_counts)}`, 'success');
       this._progress.done(`完成 ${r.planned_ecgis.length} 扇区`);
@@ -1042,6 +1137,7 @@ const App = {
     try {
       await API.clearDb();
       this.stats = {};
+      this._singleSitePlanSession = null;
       await this.refreshCells();
       this.log('数据库已清空', 'success');
     } catch (e) {
@@ -1049,20 +1145,83 @@ const App = {
     }
   },
 
+  _mapLoadRatFilter() {
+    const rat = document.getElementById('pci-rat')?.value || '';
+    return rat || null;
+  },
+
+  /** 首次进入：保持地图默认中心(111.984238, 21.860832) zoom16，再拉当前视口工参 */
   async refreshCells() {
     try {
-      const r = await API.getCells();
-      this.cells = r.cells || [];
-      this.stats = { ...this.stats, ...(r.stats || {}) };
-      const conflictEcgis = new Set();
-      MapManager.renderCells(this.cells, conflictEcgis);
-      MapManager.fitBounds(this.cells);
-      this.updateStatus();
+      const extR = await API.getCellsExtent(this._mapLoadRatFilter());
+      this.stats = { ...this.stats, ...(extR.stats || {}) };
+      const total = this.stats.total ?? this.stats.cells_count ?? 0;
+      if (total === 0) {
+        this._singleSitePlanSession = null;
+        this.cells = [];
+        this.mapViewportTruncated = false;
+        MapManager.renderCells([], new Set());
+        this.updateStatus();
+        this._refreshIaFreqbandOptions();
+        this._refreshPciFreqbandOptions();
+        this._refreshPlanScope();
+        return;
+      }
+      await this.refreshCellsViewport();
       this._refreshIaFreqbandOptions();
       this._refreshPciFreqbandOptions();
       this._refreshPlanScope();
     } catch (e) {
       this._logErr('刷新小区列表', e);
+    }
+  },
+
+  /** 仅加载当前地图视口内工参（默认模式，不触发 full / 不载入全量内存） */
+  async refreshCellsViewport() {
+    const vb = MapManager.getViewportBounds?.();
+    if (!vb) return;
+    const gen = ++this._cellsRefreshGen;
+    try {
+      const params = {
+        mode: 'map',
+        min_lat: vb.min_lat,
+        max_lat: vb.max_lat,
+        min_lon: vb.min_lon,
+        max_lon: vb.max_lon,
+        map_limit: 8000,
+      };
+      const rat = this._mapLoadRatFilter();
+      if (rat) params.rat = rat;
+      const r = await API.getCells(params);
+      if (gen !== this._cellsRefreshGen) return;
+      const viewportCells = r.cells || [];
+      const session = this._singleSitePlanSession;
+      if (session?.plannedCells?.length) {
+        const byEcgi = new Map();
+        viewportCells.forEach((c) => {
+          if (c?.ecgi && !this._isPlannedTempEcgi(c.ecgi)) byEcgi.set(c.ecgi, c);
+        });
+        session.plannedCells.forEach((c) => {
+          if (c?.ecgi) byEcgi.set(c.ecgi, c);
+        });
+        this.cells = Array.from(byEcgi.values());
+        const plannedSet = new Set(session.plannedEcgis || []);
+        MapManager.focusedCells(this.cells, session.center, session.focusRadiusKm, plannedSet, { keepView: true });
+        MapManager.renderNeighborsByType(plannedSet, session.nbrByType, true);
+      } else {
+        this.cells = viewportCells;
+        const conflictEcgis = new Set();
+        MapManager.renderCells(this.cells, conflictEcgis);
+      }
+      const truncatedNow = !!r.truncated;
+      if (truncatedNow && !this.mapViewportTruncated) {
+        this.log('当前视口小区较多，已截断显示；缩小地图或筛选制式可看清', 'warn');
+      }
+      this.mapViewportTruncated = truncatedNow;
+      this.stats = { ...this.stats, ...(r.stats || {}) };
+      this.updateStatus();
+    } catch (e) {
+      this._logErr('视口加载工参', e);
     }
   },
 
@@ -1107,7 +1266,7 @@ const App = {
   },
 
   async planAll() {
-    if (this.cells.length === 0) {
+    if (this._datasetTotal() === 0) {
       this.log('请先上传工参 (工参管理页导入)', 'warn');
       return;
     }
@@ -1157,11 +1316,11 @@ const App = {
           conflictEcgis.add(c.a.ecgi);
           conflictEcgis.add(c.b.ecgi);
         });
-        await this.refreshCells();
+        await this.refreshCellsViewport();
         MapManager.renderCells(this.cells, conflictEcgis);
         MapManager.highlightConflicts(conflictEcgis);
       } else {
-        await this.refreshCells();
+        await this.refreshCellsViewport();
         await this.checkConflict(true);
       }
       this._setStatusWithSectors();
@@ -1175,7 +1334,7 @@ const App = {
   },
 
   async planPartial() {
-    if (this.cells.length === 0) {
+    if (this._datasetTotal() === 0) {
       this.log('请先上传工参', 'warn');
       return;
     }
@@ -1238,7 +1397,7 @@ const App = {
           this.log(`PCI 质量(局部): 评估 ${s.cells_reported} 扇区, 均分 ${s.avg_score}`, 'info');
         }
       }
-      await this.refreshCells();
+      await this.refreshCellsViewport();
       if (r.conflicts?.length) {
         this.conflicts = r.conflicts;
         const conflictEcgis = new Set();
@@ -1478,24 +1637,32 @@ const App = {
     MapManager.renderNeighborLines(cell.ecgi);
   },
 
-  updateStatus() {
-    const total = this.cells.length;
+  _datasetTotal() {
+    return this.stats.total ?? this.stats.cells_count ?? 0;
+  },
+
+  _statusLine(extra = '') {
+    const inView = this.cells.length;
+    const dbTotal = this._datasetTotal();
     const ratCounts = this.stats.rat_counts || {};
-    const conflictCount = this.stats.conflict_count || 0;
-    document.getElementById('status-line').textContent =
-      total > 0
-        ? `已加载 ${total} 小区 | LTE:${ratCounts.LTE||0} NR:${ratCounts.NR||0} | 冲突:${conflictCount}`
-        : '未加载数据';
+    const conflictCount = this.stats.conflict_count ?? '—';
+    if (dbTotal === 0 && inView === 0) return '未加载数据';
+    const viewPart = dbTotal > 0
+      ? `视口 ${inView}${this.mapViewportTruncated ? '+' : ''}/${dbTotal}`
+      : `视口 ${inView}`;
+    let line = `${viewPart} | LTE:${ratCounts.LTE || 0} NR:${ratCounts.NR || 0} | 冲突:${conflictCount}`;
+    if (extra) line += ` | ${extra}`;
+    return line;
+  },
+
+  updateStatus() {
+    const el = document.getElementById('status-line');
+    if (el) el.textContent = this._statusLine();
   },
 
   _setStatusWithSectors() {
-    const total = this.cells.length;
-    const ratCounts = this.stats.rat_counts || {};
-    const conflictCount = this.stats.conflict_count || 0;
-    document.getElementById('status-line').textContent =
-      total > 0
-        ? `已加载 ${total} 小区 | LTE:${ratCounts.LTE||0} NR:${ratCounts.NR||0} | 冲突:${conflictCount} | 扇区已渲染`
-        : '未加载数据';
+    const el = document.getElementById('status-line');
+    if (el) el.textContent = this._statusLine('扇区已渲染');
   },
 
   _setBtnLoading(id, loading) {

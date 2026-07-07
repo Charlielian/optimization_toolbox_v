@@ -120,6 +120,10 @@
     background: linear-gradient(135deg, #f59e0b, #d97706);
     box-shadow: 0 4px 20px rgba(245, 158, 11, 0.4);
   }
+  .feature-card.settings .card-icon {
+    background: linear-gradient(135deg, #64748b, #475569);
+    box-shadow: 0 4px 20px rgba(100, 116, 139, 0.35);
+  }
   .feature-card.workparams .card-icon {
     background: linear-gradient(135deg, #67c23a, #52c41a);
     box-shadow: 0 4px 20px rgba(103, 194, 58, 0.4);
@@ -271,6 +275,20 @@
         <span class="card-tag">数据导出</span>
       </div>
       <div class="card-action">进入查看</div>
+    </div>
+
+    <!-- 规划默认参数 -->
+    <div class="feature-card settings" onclick="window.location.href='/settings'">
+      <div class="card-icon">🛠</div>
+      <div class="card-title">规划默认参数</div>
+      <div class="card-desc">PCI / 邻区 / 单站与批量规划的基础默认值，保存到本地数据库，服务重启后仍生效。</div>
+      <div class="card-tags">
+        <span class="card-tag">持久化</span>
+        <span class="card-tag">PCI</span>
+        <span class="card-tag">邻区</span>
+        <span class="card-tag">批量</span>
+      </div>
+      <div class="card-action">进入设置</div>
     </div>
 
   </div>

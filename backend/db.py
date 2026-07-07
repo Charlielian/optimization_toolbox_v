@@ -242,11 +242,189 @@ def load_all() -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     return cells, meta
 
 
+def count_cells(*, include_temp: bool = False) -> int:
+    """cells 表行数（不含 PLAN-* 残留；include_temp 对 DB 无 is_temp 列，与 load 一致）。"""
+    with _connect() as conn:
+        cur = conn.execute("SELECT COUNT(*) AS n FROM cells WHERE ecgi NOT LIKE 'PLAN-%'")
+        return int(cur.fetchone()["n"])
+
+
+def _row_to_cell(row: sqlite3.Row) -> Dict[str, Any]:
+    d = dict(row)
+    try:
+        d["neighbors"] = json.loads(d.pop("neighbors_json") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        d["neighbors"] = []
+    d["pci_missing"] = bool(d.get("pci_missing"))
+    d["locked"] = bool(d.get("locked"))
+    enrich_cell_with_sector(d)
+    return d
+
+
+def load_cells_page(
+    offset: int = 0,
+    limit: int = 50,
+    *,
+    rat: Optional[str] = None,
+    keyword: Optional[str] = None,
+    sync_filter: Optional[str] = None,
+    light: bool = False,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    分页从 SQLite 读取工参（不依赖全量 STATE.cells）。
+    sync_filter: synced | unsynced | None
+    light=True 时不解析 neighbors_json（列表页省内存）。
+    """
+    limit = max(1, min(int(limit), 5000))
+    offset = max(0, int(offset))
+    where: List[str] = ["ecgi NOT LIKE 'PLAN-%'"]
+    params: List[Any] = []
+    if rat:
+        where.append("rat = ?")
+        params.append(rat)
+    if sync_filter == "synced":
+        where.append("pci_synced_at IS NOT NULL AND pci_synced_at != ''")
+    elif sync_filter == "unsynced":
+        where.append("(pci_synced_at IS NULL OR pci_synced_at = '')")
+    if keyword and str(keyword).strip():
+        kw = f"%{str(keyword).strip()}%"
+        where.append(
+            "(ecgi LIKE ? OR name LIKE ? OR site_name LIKE ? OR phy_name LIKE ?)"
+        )
+        params.extend([kw, kw, kw, kw])
+    where_sql = " AND ".join(where)
+    cols = ",".join(_CELL_COLUMNS)
+    neighbor_col = "" if light else ", neighbors_json"
+
+    with _connect() as conn:
+        total = conn.execute(
+            f"SELECT COUNT(*) AS n FROM cells WHERE {where_sql}", params
+        ).fetchone()["n"]
+        cur = conn.execute(
+            f"SELECT {cols}{neighbor_col} FROM cells WHERE {where_sql} "
+            f"ORDER BY ecgi LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        )
+        cells: List[Dict[str, Any]] = []
+        for r in cur.fetchall():
+            if light:
+                d = dict(r)
+                d["pci_missing"] = bool(d.get("pci_missing"))
+                d["locked"] = bool(d.get("locked"))
+                d["neighbors"] = []
+                enrich_cell_with_sector(d)
+                cells.append(d)
+            else:
+                cells.append(_row_to_cell(r))
+    return cells, int(total)
+
+
+def load_cells_for_map(
+    *,
+    min_lat: Optional[float] = None,
+    max_lat: Optional[float] = None,
+    min_lon: Optional[float] = None,
+    max_lon: Optional[float] = None,
+    rat: Optional[str] = None,
+    limit: int = 8000,
+) -> List[Dict[str, Any]]:
+    """地图视口按需加载（无 neighbors_json），限制最大条数防一次拉全网。"""
+    limit = max(1, min(int(limit), 20000))
+    where: List[str] = ["ecgi NOT LIKE 'PLAN-%'"]
+    params: List[Any] = []
+    if rat:
+        where.append("rat = ?")
+        params.append(rat)
+    if min_lat is not None and max_lat is not None:
+        where.append("lat BETWEEN ? AND ?")
+        params.extend([min(min_lat, max_lat), max(min_lat, max_lat)])
+    if min_lon is not None and max_lon is not None:
+        where.append("lon BETWEEN ? AND ?")
+        params.extend([min(min_lon, max_lon), max(min_lon, max_lon)])
+    where_sql = " AND ".join(where)
+    cols = ",".join(_CELL_COLUMNS)
+    with _connect() as conn:
+        cur = conn.execute(
+            f"SELECT {cols} FROM cells WHERE {where_sql} ORDER BY ecgi LIMIT ?",
+            params + [limit],
+        )
+        out: List[Dict[str, Any]] = []
+        for r in cur.fetchall():
+            d = dict(r)
+            d["pci_missing"] = bool(d.get("pci_missing"))
+            d["locked"] = bool(d.get("locked"))
+            d["neighbors"] = []
+            enrich_cell_with_sector(d)
+            out.append(d)
+    return out
+
+
+def load_cells_extent(*, rat: Optional[str] = None) -> Optional[Dict[str, float]]:
+    """全网经纬度包围盒（用于首次 fitBounds，不加载全量工参）。"""
+    where = ["ecgi NOT LIKE 'PLAN-%'", "lat IS NOT NULL", "lon IS NOT NULL"]
+    params: List[Any] = []
+    if rat:
+        where.append("rat = ?")
+        params.append(rat)
+    where_sql = " AND ".join(where)
+    with _connect() as conn:
+        row = conn.execute(
+            f"SELECT MIN(lat) AS min_lat, MAX(lat) AS max_lat, "
+            f"MIN(lon) AS min_lon, MAX(lon) AS max_lon FROM cells WHERE {where_sql}",
+            params,
+        ).fetchone()
+    if not row or row["min_lat"] is None:
+        return None
+    return {
+        "min_lat": float(row["min_lat"]),
+        "max_lat": float(row["max_lat"]),
+        "min_lon": float(row["min_lon"]),
+        "max_lon": float(row["max_lon"]),
+    }
+
+
+def load_meta_only() -> Dict[str, Any]:
+    """仅读取 meta 表（启动时不加载全量 cells）。"""
+    meta: Dict[str, Any] = {}
+    with _connect() as conn:
+        for r in conn.execute("SELECT key, value FROM meta").fetchall():
+            try:
+                meta[r["key"]] = json.loads(r["value"])
+            except (json.JSONDecodeError, TypeError):
+                meta[r["key"]] = r["value"]
+    return meta
+
+
 def clear_all() -> None:
-    """清空 cells 和 meta 表"""
+    """清空 cells 和 meta 表（保留规划默认参数 app_plan_defaults）"""
+    preserved = get_meta_json("app_plan_defaults")
     with _connect() as conn:
         conn.execute("DELETE FROM cells")
         conn.execute("DELETE FROM meta")
+        if preserved is not None:
+            set_meta_json("app_plan_defaults", preserved)
+
+
+def get_meta_json(key: str) -> Optional[Any]:
+    """读取 meta 表 JSON 值"""
+    with _connect() as conn:
+        row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    if not row or row["value"] is None:
+        return None
+    try:
+        return json.loads(row["value"])
+    except (json.JSONDecodeError, TypeError):
+        return row["value"]
+
+
+def set_meta_json(key: str, value: Any) -> None:
+    """写入 meta 表（JSON 序列化）"""
+    payload = json.dumps(value, ensure_ascii=False)
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, payload),
+        )
 
 
 # ──────────────────────────────────────────────

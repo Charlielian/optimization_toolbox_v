@@ -148,10 +148,14 @@ const MapManager = {
   },
 
   // ── 初始化 ──────────────────────────────────────────────
+  /** 规划页默认视野：经度 111.984238，纬度 21.860832，16 级 */
+  DEFAULT_CENTER: [21.860832, 111.984238],
+  DEFAULT_ZOOM: 16,
+
   init(mapElementId) {
     this.map = L.map(mapElementId, {
-      center: [21.858, 111.955],
-      zoom: 11,
+      center: this.DEFAULT_CENTER,
+      zoom: this.DEFAULT_ZOOM,
       zoomControl: false,
       preferCanvas: true,
     });
@@ -266,7 +270,37 @@ const MapManager = {
     // ── 右键取点 → 写入「单站规划」经纬度 ─────────────────
     this._bindPickLatLng();
 
+    this._viewportChangeTimer = null;
+    this._onViewportChange = null;
+
     return this.map;
+  },
+
+  /** 绑定视口变化回调（规划页按需拉取工参） */
+  onViewportChange(fn) {
+    this._onViewportChange = typeof fn === 'function' ? fn : null;
+    if (!this.map || this._viewportEventsBound) return;
+    this._viewportEventsBound = true;
+    const fire = () => {
+      clearTimeout(this._viewportChangeTimer);
+      this._viewportChangeTimer = setTimeout(() => {
+        if (this._onViewportChange) this._onViewportChange();
+      }, 280);
+    };
+    this.map.on('moveend', fire);
+    this.map.on('zoomend', fire);
+  },
+
+  /** 当前地图视口 { min_lat, max_lat, min_lon, max_lon } */
+  getViewportBounds() {
+    if (!this.map) return null;
+    const b = this.map.getBounds();
+    return {
+      min_lat: b.getSouth(),
+      max_lat: b.getNorth(),
+      min_lon: b.getWest(),
+      max_lon: b.getEast(),
+    };
   },
 
   /**
@@ -1091,11 +1125,22 @@ const MapManager = {
     const lats = cells.map(c => c.lat).filter(isFinite);
     const lons = cells.map(c => c.lon).filter(isFinite);
     if (lats.length === 0) return;
+    this.fitLatLngBounds(Math.min(...lats), Math.min(...lons), Math.max(...lats), Math.max(...lons));
+  },
+
+  fitLatLngBounds(minLat, minLon, maxLat, maxLon) {
+    if (!this.map || !isFinite(minLat) || !isFinite(minLon)) return;
     const bounds = L.latLngBounds(
-      [Math.min(...lats), Math.min(...lons)],
-      [Math.max(...lats), Math.max(...lons)]
+      [minLat, minLon],
+      [maxLat, maxLon],
     );
     this.map.fitBounds(bounds, { padding: [40, 40] });
+  },
+
+  setDefaultView() {
+    if (!this.map) return;
+    const [lat, lon] = this.DEFAULT_CENTER;
+    this.map.setView([lat, lon], this.DEFAULT_ZOOM);
   },
 
   // ── 清除聚焦 ──────────────────────────────────────────────────
@@ -1132,10 +1177,21 @@ const MapManager = {
    */
   setVisualRadius(m) {
     this.visualRadius = m;
-    // 用缓存的状态重新渲染（自动应用新视觉半径）
-    if (this._lastCells && this._lastCells.length > 0) {
-      this.renderCells(this._lastCells, this._lastConflictEcgis);
+    if (!this._lastCells || this._lastCells.length === 0) return;
+    if (this._focusMode && this._focusCenter) {
+      this.focusedCells(
+        this._lastCells,
+        this._focusCenter,
+        this._focusRadiusKm,
+        this._lastPlannedEcgis || new Set(),
+        { keepView: true },
+      );
+      if (this._lastNbrData) {
+        this.renderNeighborsByType(this._lastPlannedEcgis, this._lastNbrData, true);
+      }
+      return;
     }
+    this.renderCells(this._lastCells, this._lastConflictEcgis, this._lastPlannedEcgis);
   },
 
   // ── 辅助 ─────────────────────────────────────────────────────

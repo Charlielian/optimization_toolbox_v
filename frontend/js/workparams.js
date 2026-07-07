@@ -9,7 +9,9 @@
   let currentCells = [];
   let currentStats = {};
   let currentPage = 1;
+  let cellsListTotal = 0;
   const pageSize = 50;
+  let _cellsSearchTimer = null;
   let importHistory = [];
   let cellModalMode = 'create'; // create | edit
   let editingEcgi = null;
@@ -142,15 +144,16 @@
     // 小区搜索和筛选
     document.getElementById('cells-search').addEventListener('input', () => {
       currentPage = 1;
-      renderCellsTable();
+      clearTimeout(_cellsSearchTimer);
+      _cellsSearchTimer = setTimeout(() => loadCells(), 350);
     });
     document.getElementById('filter-rat').addEventListener('change', () => {
       currentPage = 1;
-      renderCellsTable();
+      loadCells();
     });
     document.getElementById('filter-sync').addEventListener('change', () => {
       currentPage = 1;
-      renderCellsTable();
+      loadCells();
     });
     document.getElementById('btn-refresh-cells').addEventListener('click', loadCells);
 
@@ -623,11 +626,9 @@
   // ========== 统计 ==========
   async function loadStats() {
     try {
-      const r = await API.getCells();
+      const r = await API.getCells({ page: 1, page_size: 1 });
       currentStats = r.stats || {};
-      currentCells = r.cells || [];
       updateStats();
-      renderCellsTable();
     } catch (e) {
       log('加载统计失败: ' + e.message, 'error');
     }
@@ -635,18 +636,14 @@
 
   function updateStats() {
     const ratCounts = currentStats.rat_counts || {};
-    document.getElementById('stat-total').textContent = currentCells.length;
+    const total = currentStats.total ?? currentStats.cells_count ?? cellsListTotal ?? 0;
+    document.getElementById('stat-total').textContent = total;
     document.getElementById('stat-lte').textContent = ratCounts.LTE || 0;
     document.getElementById('stat-nr').textContent = ratCounts.NR || 0;
-    document.getElementById('stat-conflict').textContent = currentStats.conflict_count || 0;
-    // 网管同步统计
-    let synced = 0;
-    for (const c of currentCells) {
-      if (c.pci_synced_at) synced += 1;
-    }
-    document.getElementById('stat-synced').textContent = synced;
-    document.getElementById('stat-unsynced').textContent = currentCells.length - synced;
-    document.getElementById('cells-count').textContent = currentCells.length;
+    document.getElementById('stat-conflict').textContent = currentStats.conflict_count ?? '—';
+    document.getElementById('stat-synced').textContent = '—';
+    document.getElementById('stat-unsynced').textContent = '—';
+    document.getElementById('cells-count').textContent = total;
   }
 
   // ========== 标签页 ==========
@@ -670,54 +667,49 @@
   }
 
   // ========== 小区列表 ==========
+  function cellsListQueryParams() {
+    const keyword = (document.getElementById('cells-search').value || '').trim();
+    const rat = document.getElementById('filter-rat').value;
+    const syncFilter = document.getElementById('filter-sync').value;
+    const p = { page: currentPage, page_size: pageSize };
+    if (keyword) p.keyword = keyword;
+    if (rat) p.rat = rat;
+    if (syncFilter) p.sync_filter = syncFilter;
+    return p;
+  }
+
   async function loadCells() {
     try {
-      const r = await API.getCells();
+      const r = await API.getCells(cellsListQueryParams());
       currentCells = r.cells || [];
+      cellsListTotal = r.total ?? currentStats.total ?? 0;
       currentStats = { ...currentStats, ...(r.stats || {}) };
+      if (r.total != null) currentStats.total = r.total;
       updateStats();
-      currentPage = 1;
       renderCellsTable();
     } catch (e) {
       log('加载小区列表失败: ' + e.message, 'error');
     }
   }
 
-  function getFilteredCells() {
-    const keyword = (document.getElementById('cells-search').value || '').toLowerCase();
-    const rat = document.getElementById('filter-rat').value;
-    const syncFilter = document.getElementById('filter-sync').value;
-
-    return currentCells.filter(c => {
-      if (rat && c.rat !== rat) return false;
-      if (syncFilter === 'synced' && !c.pci_synced_at) return false;
-      if (syncFilter === 'unsynced' && c.pci_synced_at) return false;
-      if (keyword) {
-        const text = `${c.name || ''} ${c.ecgi || ''} ${c.site_name || ''}`.toLowerCase();
-        if (!text.includes(keyword)) return false;
-      }
-      return true;
-    });
-  }
-
   function renderCellsTable() {
     const container = document.getElementById('cells-table-container');
-    const filtered = getFilteredCells();
+    const total = cellsListTotal;
+    const pageData = currentCells;
 
-    if (filtered.length === 0) {
+    if (pageData.length === 0) {
       container.innerHTML = `
         <div class="empty-state">
           <div class="icon">📡</div>
-          <div class="text">${currentCells.length === 0 ? '暂无工参数据，请先导入' : '没有匹配的小区'}</div>
+          <div class="text">${total === 0 ? '暂无工参数据，请先导入' : '没有匹配的小区'}</div>
         </div>
       `;
       document.getElementById('cells-pagination').innerHTML = '';
       return;
     }
 
-    const totalPages = Math.ceil(filtered.length / pageSize);
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
     const start = (currentPage - 1) * pageSize;
-    const pageData = filtered.slice(start, start + pageSize);
 
     const columns = [
       { key: 'name', label: '小区名' },
@@ -803,7 +795,7 @@
       }
     };
 
-    renderPagination(filtered.length, totalPages);
+    renderPagination(total, totalPages);
   }
 
   function renderPagination(total, totalPages) {
@@ -844,7 +836,7 @@
 
   window.goToPage = function (page) {
     currentPage = page;
-    renderCellsTable();
+    loadCells();
   };
 
   // ========== 导入历史 ==========

@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>规划默认参数 - 网优百宝箱</title>
+<link rel="icon" href="data:,">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+    color: #e0e0e0;
+    background: #1a1a1a;
+    min-height: 100vh;
+  }
+  #top-nav {
+    position: sticky; top: 0; height: 44px;
+    background: #141414; border-bottom: 1px solid #3a3a3a;
+    display: flex; align-items: center; padding: 0 16px; z-index: 10;
+  }
+  #top-nav a.back-btn {
+    color: #aaa; font-size: 12px; text-decoration: none;
+    padding: 6px 12px; border: 1px solid #3a3a3a; border-radius: 4px; background: #2a2a2a;
+  }
+  #top-nav a.back-btn:hover { color: #fff; }
+  #top-nav .page-title { flex: 1; text-align: center; font-weight: 600; }
+  #top-nav .placeholder { width: 80px; }
+  main { max-width: 720px; margin: 0 auto; padding: 20px 16px 48px; }
+  .hint {
+    font-size: 12px; color: #888; line-height: 1.5; margin-bottom: 20px;
+    padding: 12px; background: #252525; border-radius: 6px; border-left: 3px solid #4dabf7;
+  }
+  section {
+    background: #2a2a2a; border: 1px solid #3a3a3a; border-radius: 8px;
+    padding: 16px; margin-bottom: 16px;
+  }
+  section h2 { font-size: 14px; color: #4dabf7; margin-bottom: 12px; }
+  .row {
+    display: grid; grid-template-columns: 140px 1fr; gap: 8px 12px;
+    align-items: center; margin-bottom: 10px;
+  }
+  .row label { color: #aaa; font-size: 12px; }
+  .row input[type="number"], .row select {
+    width: 100%; max-width: 200px; padding: 6px 8px;
+    background: #1e1e1e; border: 1px solid #444; border-radius: 4px; color: #eee;
+  }
+  .row input[type="checkbox"] { width: auto; }
+  .actions { display: flex; gap: 10px; margin-top: 24px; flex-wrap: wrap; }
+  .btn {
+    padding: 8px 18px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px;
+  }
+  .btn-primary { background: #409eff; color: #fff; }
+  .btn-primary:hover { background: #66b1ff; }
+  .btn-secondary { background: #444; color: #ddd; }
+  .btn-secondary:hover { background: #555; }
+  #toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    padding: 10px 20px; border-radius: 6px; display: none; z-index: 100;
+  }
+  #toast.ok { display: block; background: #2d6a4f; color: #fff; }
+  #toast.err { display: block; background: #9b2226; color: #fff; }
+</style>
+</head>
+<body>
+<nav id="top-nav">
+  <a class="back-btn" href="/">← 首页</a>
+  <span class="page-title">规划默认参数</span>
+  <span class="placeholder"></span>
+</nav>
+<main>
+  <p class="hint">
+    参数保存在本机数据库 <code>data/plan.db</code> 的 meta 表中，<strong>重启服务后仍有效</strong>。
+    小区规划页的单站/批量规划、PCI 大屏的全网/局部规划（含邻区）均会读取此处默认值；
+    单站卡片上的「得分阈值」若填写则覆盖「单站邻区得分阈值」；批量模板「邻区得分阈值」列可覆盖批量默认。
+  </p>
+
+  <section>
+    <h2>PCI 规划</h2>
+    <div class="row"><label>PCI 引擎</label>
+      <select id="pci-engine">
+        <option value="legacy">Legacy</option>
+        <option value="rftools">RFTools</option>
+      </select>
+    </div>
+    <div class="row"><label>复用距离 (km)</label>
+      <input type="number" id="pci-reuse_distance_km" step="0.1" min="0.1" max="100" />
+    </div>
+    <div class="row"><label>Mod6 校验</label>
+      <input type="checkbox" id="pci-check_mod6" />
+    </div>
+    <div class="row"><label>Mod30 校验</label>
+      <input type="checkbox" id="pci-check_mod30" checked />
+    </div>
+    <div class="row"><label>方向性过滤</label>
+      <input type="checkbox" id="pci-directional_filter" checked />
+    </div>
+    <div class="row"><label>波束交叠打分</label>
+      <input type="checkbox" id="pci-use_beam_overlap_score" />
+    </div>
+  </section>
+
+  <section>
+    <h2>邻区规划（全网 / 单站 / 批量算法）</h2>
+    <div class="row"><label>最大邻区数</label>
+      <input type="number" id="nbr-max_neighbors" min="1" max="800" />
+    </div>
+    <div class="row"><label>最大距离 (km)</label>
+      <input type="number" id="nbr-max_distance_km" step="0.1" min="0.1" />
+    </div>
+    <div class="row"><label>距离权重</label>
+      <input type="number" id="nbr-weight_distance" step="0.05" min="0" max="1" />
+    </div>
+    <div class="row"><label>交叠权重</label>
+      <input type="number" id="nbr-weight_overlap" step="0.05" min="0" max="1" />
+    </div>
+    <div class="row"><label>全网邻区得分阈值</label>
+      <input type="number" id="nbr-score_threshold" step="0.05" min="0" max="1" />
+    </div>
+    <div class="row"><label>单站邻区得分阈值</label>
+      <input type="number" id="nbr-single_score_threshold" step="0.05" min="0" max="1" />
+    </div>
+    <div class="row"><label>异系统邻区</label>
+      <input type="checkbox" id="nbr-enable_cross_system" checked />
+    </div>
+    <div class="row"><label>双向邻区</label>
+      <input type="checkbox" id="nbr-enable_bidirectional" checked />
+    </div>
+  </section>
+
+  <section>
+    <h2>批量规划</h2>
+    <div class="row"><label>默认邻区得分阈值</label>
+      <input type="number" id="batch-default_nbr_score_threshold" step="0.05" min="0" max="1" />
+    </div>
+    <div class="row"><label>默认规划模式</label>
+      <select id="batch-planning_mode">
+        <option value="pci+nbr">PCI + 邻区</option>
+        <option value="pci">仅 PCI</option>
+        <option value="nbr">仅邻区</option>
+      </select>
+    </div>
+  </section>
+
+  <div class="actions">
+    <button class="btn btn-primary" id="btn-save">保存</button>
+    <button class="btn btn-secondary" id="btn-reset">恢复内置默认</button>
+  </div>
+</main>
+<div id="toast"></div>
+<script src="/static/js/api.js"></script>
+<script>
+(function () {
+  function toast(msg, ok) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = ok ? 'ok' : 'err';
+    setTimeout(() => { el.className = ''; }, 2800);
+  }
+  function fill(d) {
+    const pci = d.pci || {};
+    const nbr = d.neighbor || {};
+    const batch = d.batch || {};
+    document.getElementById('pci-engine').value = pci.engine || 'legacy';
+    document.getElementById('pci-reuse_distance_km').value = pci.reuse_distance_km ?? 5;
+    document.getElementById('pci-check_mod6').checked = !!pci.check_mod6;
+    document.getElementById('pci-check_mod30').checked = pci.check_mod30 !== false;
+    document.getElementById('pci-directional_filter').checked = pci.directional_filter !== false;
+    document.getElementById('pci-use_beam_overlap_score').checked = !!pci.use_beam_overlap_score;
+    document.getElementById('nbr-max_neighbors').value = nbr.max_neighbors ?? 16;
+    document.getElementById('nbr-max_distance_km').value = nbr.max_distance_km ?? 5;
+    document.getElementById('nbr-weight_distance').value = nbr.weight_distance ?? 0.7;
+    document.getElementById('nbr-weight_overlap').value = nbr.weight_overlap ?? 0.3;
+    document.getElementById('nbr-score_threshold').value = nbr.score_threshold ?? 0.5;
+    document.getElementById('nbr-single_score_threshold').value = nbr.single_score_threshold ?? 0.5;
+    document.getElementById('nbr-enable_cross_system').checked = nbr.enable_cross_system !== false;
+    document.getElementById('nbr-enable_bidirectional').checked = nbr.enable_bidirectional !== false;
+    document.getElementById('batch-default_nbr_score_threshold').value = batch.default_nbr_score_threshold ?? 0.5;
+    document.getElementById('batch-planning_mode').value = batch.planning_mode || 'pci+nbr';
+  }
+  function collect() {
+    return {
+      pci: {
+        engine: document.getElementById('pci-engine').value,
+        reuse_distance_km: parseFloat(document.getElementById('pci-reuse_distance_km').value),
+        check_mod6: document.getElementById('pci-check_mod6').checked,
+        check_mod30: document.getElementById('pci-check_mod30').checked,
+        directional_filter: document.getElementById('pci-directional_filter').checked,
+        use_beam_overlap_score: document.getElementById('pci-use_beam_overlap_score').checked,
+      },
+      neighbor: {
+        max_neighbors: parseInt(document.getElementById('nbr-max_neighbors').value, 10),
+        max_distance_km: parseFloat(document.getElementById('nbr-max_distance_km').value),
+        weight_distance: parseFloat(document.getElementById('nbr-weight_distance').value),
+        weight_overlap: parseFloat(document.getElementById('nbr-weight_overlap').value),
+        score_threshold: parseFloat(document.getElementById('nbr-score_threshold').value),
+        single_score_threshold: parseFloat(document.getElementById('nbr-single_score_threshold').value),
+        enable_cross_system: document.getElementById('nbr-enable_cross_system').checked,
+        enable_bidirectional: document.getElementById('nbr-enable_bidirectional').checked,
+      },
+      batch: {
+        default_nbr_score_threshold: parseFloat(document.getElementById('batch-default_nbr_score_threshold').value),
+        planning_mode: document.getElementById('batch-planning_mode').value,
+      },
+    };
+  }
+  async function load() {
+    const r = await API.getPlanDefaults();
+    fill(r.defaults || r);
+  }
+  document.getElementById('btn-save').onclick = async () => {
+    try {
+      const r = await API.savePlanDefaults(collect());
+      fill(r.defaults);
+      toast('已保存', true);
+    } catch (e) {
+      toast(e.message || '保存失败', false);
+    }
+  };
+  document.getElementById('btn-reset').onclick = async () => {
+    if (!confirm('恢复为程序内置默认值？')) return;
+    try {
+      const r = await API.resetPlanDefaults();
+      fill(r.defaults);
+      toast('已恢复内置默认', true);
+    } catch (e) {
+      toast(e.message || '失败', false);
+    }
+  };
+  load().catch(e => toast(e.message || '加载失败', false));
+})();
+</script>
+</body>
+</html>

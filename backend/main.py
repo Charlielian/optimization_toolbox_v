@@ -6,6 +6,7 @@ FastAPI 主入口
 """
 from __future__ import annotations
 
+import gc
 import logging
 import os
 import re
@@ -29,6 +30,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from app_paths import resolve_resource, runtime_root
 from config import config
 from log_config import setup_logging
+from memory_utils import release_planning_temp
+from runtime_utils import (
+    plan_lock_busy_detail,
+    planning_executor_max_workers,
+    release_plan_lock,
+    try_acquire_plan_lock,
+)
 setup_logging()  # 在所有模块 import 之前, 抓取启动期日志
 logger = logging.getLogger(__name__)
 
@@ -61,6 +69,11 @@ from data_parser import (
 from db import clear_all as db_clear_all
 from db import init_db, init_config_db, load_all as db_load_all, save_all as db_save_all
 from db import (
+    count_cells,
+    load_cells_extent,
+    load_cells_for_map,
+    load_cells_page,
+    load_meta_only,
     save_config_sheet,
     get_config_table_data,
     list_config_tables,
@@ -98,6 +111,15 @@ from pci_quality_report import (
     build_pci_quality_report,
 )
 from site_planner import plan_batch_sites, plan_single_site
+from app_settings import (
+    batch_default_nbr_score_threshold,
+    get_plan_defaults,
+    neighbor_kwargs_from_defaults,
+    pci_defaults_dict,
+    reset_plan_defaults,
+    save_plan_defaults,
+    single_site_default_score_threshold,
+)
 
 # 路径（从配置文件读取；与 config.ROOT_DIR 一致）
 ROOT_DIR = runtime_root()
@@ -214,7 +236,11 @@ STATE = AppState()
 
 # ── 异步任务队列（用于单站/批量规划超时保护）──
 _job_store: Dict[str, Dict[str, Any]] = {}
-_executor = ThreadPoolExecutor(max_workers=4)
+_executor = ThreadPoolExecutor(max_workers=planning_executor_max_workers())
+
+# 工参：SQLite 为准；规划/写操作前再载入内存，避免启动即占满 RAM
+_cells_loaded: bool = False
+_temp_cells: List[Dict[str, Any]] = []  # 单站 PLAN-* 等 is_temp，不入库
 
 
 def _start_job(fn, *args, **kwargs) -> str:
@@ -276,8 +302,9 @@ def _find_cell_index(ecgi: str) -> int:
     return -1
 
 
-def _cell_to_light(c: Dict[str, Any]) -> Dict[str, Any]:
-    return {
+def _cell_to_light(c: Dict[str, Any], *, include_neighbors: bool = True) -> Dict[str, Any]:
+    nbrs = c.get("neighbors", []) if include_neighbors else []
+    out = {
         "ecgi": c.get("ecgi"),
         "name": c.get("name"),
         "rat": c.get("rat"),
@@ -304,22 +331,59 @@ def _cell_to_light(c: Dict[str, Any]) -> Dict[str, Any]:
         "bandwidth": c.get("bandwidth"),
         "freq_band_ind": c.get("freq_band_ind"),
         "pci_synced_at": c.get("pci_synced_at"),
-        "neighbor_count": len(c.get("neighbors", [])),
-        "neighbors": c.get("neighbors", []),
+        "neighbor_count": len(nbrs),
         "pci_quality": c.get("pci_quality"),
     }
+    if include_neighbors:
+        out["neighbors"] = nbrs
+    return out
+
+
+def _merge_runtime_cells() -> List[Dict[str, Any]]:
+    """持久化工参 + 内存临时小区（单站 PLAN-*）。"""
+    if not _temp_cells:
+        return STATE.cells
+    return STATE.cells + _temp_cells
+
+
+def _ensure_cells_loaded() -> None:
+    """按需从 SQLite 载入工参到 STATE（启动不预加载）。"""
+    global _cells_loaded
+    if _cells_loaded:
+        return
+    cells, meta = db_load_all()
+    STATE.cells = cells or []
+    if meta.get("stats"):
+        STATE.plan_stats = {**(STATE.plan_stats or {}), **meta["stats"]}
+    _cells_loaded = True
+    logger.info("从数据库载入 %d 个小区到内存", len(STATE.cells))
+
+
+def _require_cells_loaded() -> None:
+    _ensure_cells_loaded()
+    if not STATE.cells and not _temp_cells:
+        raise HTTPException(400, "请先上传工参文件")
+
+
+def _plan_busy_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": f"已有规划任务进行中（{plan_lock_busy_detail()}），请稍后再试",
+        },
+    )
 
 
 @app.on_event("startup")
 def _on_startup():
-    """启动时: 建表 + 把上次数据加载回内存"""
+    """启动时: 建表；工参留 SQLite，按需再载入内存"""
     init_db()
     init_config_db()  # 初始化配置相关表
-    cells, meta = db_load_all()
-    if cells:
-        STATE.cells = cells
-        STATE.plan_stats = meta.get("stats") or {}
-        logger.info("从数据库恢复 %d 个小区", len(cells))
+    meta = load_meta_only()
+    STATE.plan_stats = meta.get("stats") or {}
+    n = count_cells()
+    if n:
+        logger.info("数据库已有 %d 个小区，将在首次规划/写操作前载入内存", n)
     else:
         logger.info("数据库为空, 等待上传工参")
 
@@ -330,7 +394,7 @@ def _on_startup():
 class PlanAllRequest(BaseModel):
     """全网规划：默认仅 PCI；plan_neighbors=True 时追加邻区规划。"""
     plan_neighbors: bool = False
-    max_neighbors: int = Field(default=16, ge=1, le=64)
+    max_neighbors: int = Field(default=16, ge=1, le=800)
     max_distance_km: float = Field(default=5.0, gt=0)
     min_overlap_ratio: float = Field(default=0.0, ge=0)
     score_threshold: float = Field(default=0.10, ge=0, le=1)
@@ -419,10 +483,14 @@ class CellUpdateRequest(BaseModel):
 @app.post("/api/clear")
 async def api_clear():
     """清空数据库 + 内存中的所有小区和规划结果"""
+    global _cells_loaded
     db_clear_all()
     STATE.cells = []
     STATE.plan_log = []
     STATE.plan_stats = {}
+    _temp_cells.clear()
+    _cells_loaded = True
+    gc.collect()
     return {
         "success": True,
         "cells_count": 0,
@@ -438,7 +506,9 @@ def _apply_workparam_import(
 ) -> Dict[str, Any]:
     """单批工参写入 STATE，返回与 /api/upload 一致的响应字段。"""
     from collections import Counter
-    import copy
+
+    global _cells_loaded
+    _ensure_cells_loaded()
 
     if append and STATE.cells:
         existing = {c["ecgi"]: c for c in STATE.cells if c.get("ecgi")}
@@ -476,8 +546,9 @@ def _apply_workparam_import(
             "cells_count": len(merged),
         }
 
-    STATE.cells = copy.deepcopy(new_cells)
+    STATE.cells = list(new_cells)
     STATE.plan_log = []
+    _cells_loaded = True
     STATE.plan_stats = {
         "total": stats.get("total", len(new_cells)),
         "valid": stats.get("valid", len(new_cells)),
@@ -487,7 +558,7 @@ def _apply_workparam_import(
     _persist_current()
     band_dist = Counter(c.get("freq_band_label") for c in STATE.cells)
     sector_dist = Counter((c.get("beam"), c.get("radius")) for c in STATE.cells)
-    return {
+    out = {
         "success": True,
         "mode": "replace",
         "stats": stats,
@@ -496,6 +567,9 @@ def _apply_workparam_import(
         "band_distribution": dict(band_dist.most_common()),
         "sector_distribution": {f"{b},{r}": n for (b, r), n in sector_dist.most_common()},
     }
+    del new_cells
+    gc.collect()
+    return out
 
 
 @app.post("/api/upload")
@@ -613,8 +687,7 @@ async def api_workparams_bulk_update(file: UploadFile = File(...)):
     按 CGI/ECGI 关联批量更新工参中的 pci、tac、earfcn（csv/xlsx/xls）。
     文件需含 cgi 列及 pci/tac/earfcn 中至少一列有值；空单元格表示不修改该字段。
     """
-    if not STATE.cells:
-        raise HTTPException(400, "请先导入工参，再执行文件更新")
+    _require_cells_loaded()
     content = await file.read()
     if not content:
         raise HTTPException(400, "文件为空")
@@ -666,79 +739,100 @@ async def api_workparams_bulk_update_template():
 @app.post("/api/plan/all")
 async def api_plan_all(req: PlanAllRequest):
     """全网 PCI 规划；可选邻区规划 (plan_neighbors=True)"""
-    if not STATE.cells:
-        raise HTTPException(400, "请先上传工参文件")
+    _require_cells_loaded()
+    if not try_acquire_plan_lock("plan_all"):
+        return _plan_busy_response()
 
-    set_scene_mode(req.scene_mode)
+    try:
+        set_scene_mode(req.scene_mode)
 
-    from site_type_ext import build_per_site_thresholds
-    per_site = build_per_site_thresholds(STATE.cells, default_safe_m=1500.0, default_same_pci_min_m=30000.0)
-
-    pci_result = plan_all(
-        STATE.cells,
-        whitelist=req.pci_whitelist,
-        blacklist=req.pci_blacklist,
-        engine=req.engine,
-        reuse_distance_km=req.reuse_distance_km,
-        check_mod6=req.check_mod6,
-        check_mod30=req.check_mod30,
-        per_site_thresholds=per_site,
-        directional_filter=req.directional_filter,
-        rat_filter=req.rat,
-        freq_band_filter=req.freq_band,
-    )
-    STATE.plan_log.extend(pci_result["log"])
-
-    nbr_stats: Dict[str, Any] = {}
-    if req.plan_neighbors:
-        nbr_result = plan_neighbors(
-            STATE.cells,
-            max_neighbors=req.max_neighbors,
-            max_distance_km=req.max_distance_km,
-            min_overlap_ratio=req.min_overlap_ratio,
-            enable_cross_system=req.enable_cross_system,
-            enable_bidirectional=req.enable_bidirectional,
-            score_threshold=req.score_threshold,
-            weight_distance=req.weight_distance,
-            weight_overlap=req.weight_overlap,
+        from site_type_ext import build_per_site_thresholds
+        per_site = build_per_site_thresholds(
+            STATE.cells, default_safe_m=1500.0, default_same_pci_min_m=30000.0,
         )
-        STATE.plan_log.extend(nbr_result["log"])
-        nbr_stats = nbr_result["stats"]
 
-    conflicts = collect_conflicts(STATE.cells, use_original_pci=False,
-                                   directional_filter=req.directional_filter)
-    STATE.plan_stats.update({
-        "conflict_count": len(conflicts),
-        "conflict_stats": stats_summary(conflicts),
-        "pci_stats": pci_result["stats"],
-    })
-    if nbr_stats:
-        STATE.plan_stats["neighbor_stats"] = nbr_stats
-    pci_quality = _pci_quality_after_plan(
-        conflicts,
-        check_mod30=req.check_mod30,
-        directional_filter=req.directional_filter,
-    )
-    attach_pci_quality_to_cells(STATE.cells, pci_quality)
-    STATE.plan_stats["pci_quality_summary"] = pci_quality.get("summary", {})
-    _persist_current()
+        pci_result = plan_all(
+            STATE.cells,
+            whitelist=req.pci_whitelist,
+            blacklist=req.pci_blacklist,
+            engine=req.engine,
+            reuse_distance_km=req.reuse_distance_km,
+            check_mod6=req.check_mod6,
+            check_mod30=req.check_mod30,
+            per_site_thresholds=per_site,
+            directional_filter=req.directional_filter,
+            rat_filter=req.rat,
+            freq_band_filter=req.freq_band,
+        )
+        STATE.plan_log.extend(pci_result["log"])
+        per_site = None
 
-    return {
-        "success": True,
-        "stats": STATE.plan_stats,
-        "log": pci_result.get("log", STATE.plan_log[-50:]),
-        "conflicts_count": len(conflicts),
-        "conflicts": conflicts[:200],
-        "pci_quality": pci_quality,
-    }
+        nbr_stats: Dict[str, Any] = {}
+        nbr_result = None
+        if req.plan_neighbors:
+            nbr_result = plan_neighbors(
+                STATE.cells,
+                max_neighbors=req.max_neighbors,
+                max_distance_km=req.max_distance_km,
+                min_overlap_ratio=req.min_overlap_ratio,
+                enable_cross_system=req.enable_cross_system,
+                enable_bidirectional=req.enable_bidirectional,
+                score_threshold=req.score_threshold,
+                weight_distance=req.weight_distance,
+                weight_overlap=req.weight_overlap,
+            )
+            STATE.plan_log.extend(nbr_result["log"])
+            nbr_stats = nbr_result["stats"]
+
+        conflicts = collect_conflicts(
+            STATE.cells, use_original_pci=False, directional_filter=req.directional_filter,
+        )
+        STATE.plan_stats.update({
+            "conflict_count": len(conflicts),
+            "conflict_stats": stats_summary(conflicts),
+            "pci_stats": pci_result["stats"],
+        })
+        if nbr_stats:
+            STATE.plan_stats["neighbor_stats"] = nbr_stats
+        pci_quality = _pci_quality_after_plan(
+            conflicts,
+            check_mod30=req.check_mod30,
+            directional_filter=req.directional_filter,
+        )
+        attach_pci_quality_to_cells(STATE.cells, pci_quality)
+        STATE.plan_stats["pci_quality_summary"] = pci_quality.get("summary", {})
+        _persist_current()
+
+        resp = {
+            "success": True,
+            "stats": STATE.plan_stats,
+            "log": pci_result.get("log", STATE.plan_log[-50:]),
+            "conflicts_count": len(conflicts),
+            "conflicts": conflicts[:200],
+            "pci_quality": pci_quality,
+        }
+        release_planning_temp(trim_log=STATE.plan_log)
+        return resp
+    finally:
+        release_plan_lock()
 
 
 @app.post("/api/plan/partial")
 async def api_plan_partial(req: PlanPartialRequest):
     """局部 PCI 微调；可选邻区规划"""
-    if not STATE.cells:
-        raise HTTPException(400, "请先上传工参文件")
+    _require_cells_loaded()
+    if not try_acquire_plan_lock("plan_partial"):
+        return _plan_busy_response()
 
+    try:
+        return _api_plan_partial_body(req)
+    finally:
+        release_plan_lock()
+
+
+def _api_plan_partial_body(req: PlanPartialRequest) -> Dict[str, Any]:
+    per_site = None
+    nbr_result = None
     if req.engine == "rftools":
         # 局部模式：仅对选中小区分配 PCI
         idx_map = {c["ecgi"]: i for i, c in enumerate(STATE.cells)}
@@ -780,12 +874,14 @@ async def api_plan_partial(req: PlanPartialRequest):
 
     nbr_stats: Dict[str, Any] = {}
     if req.plan_neighbors:
-        nbr_result = plan_neighbors(
-            STATE.cells,
-            max_neighbors=req.max_neighbors,
-            max_distance_km=req.max_distance_km,
-            enable_cross_system=req.enable_cross_system,
+        nbr_kw = neighbor_kwargs_from_defaults(
+            {
+                "max_neighbors": req.max_neighbors,
+                "max_distance_km": req.max_distance_km,
+                "enable_cross_system": req.enable_cross_system,
+            }
         )
+        nbr_result = plan_neighbors(STATE.cells, **nbr_kw)
         STATE.plan_log.extend(nbr_result.get("log", []))
         nbr_stats = nbr_result["stats"]
 
@@ -809,7 +905,7 @@ async def api_plan_partial(req: PlanPartialRequest):
     STATE.plan_stats["pci_quality_summary"] = pci_quality.get("summary", {})
     _persist_current()
 
-    return {
+    resp = {
         "success": True,
         "affected": pci_result.get("affected", []),
         "conflicts_count": len(conflicts),
@@ -818,6 +914,8 @@ async def api_plan_partial(req: PlanPartialRequest):
         "stats": STATE.plan_stats,
         "pci_quality": pci_quality,
     }
+    release_planning_temp(trim_log=STATE.plan_log)
+    return resp
 
 
 class PciQualityRequest(BaseModel):
@@ -829,8 +927,7 @@ class PciQualityRequest(BaseModel):
 @app.post("/api/pci/quality")
 async def api_pci_quality(req: PciQualityRequest):
     """基于当前 new_pci 生成 PCI 得分、最近邻与干扰说明（规划后或手动改 PCI 后均可调用）。"""
-    if not STATE.cells:
-        raise HTTPException(400, "请先上传工参文件")
+    _require_cells_loaded()
     ecgi_set = set(req.ecgis) if req.ecgis else None
     conflicts = collect_conflicts(
         STATE.cells, use_original_pci=False, directional_filter=req.directional_filter,
@@ -848,8 +945,7 @@ async def api_pci_quality(req: PciQualityRequest):
 @app.post("/api/check/conflict")
 async def api_check_conflict(directional_filter: bool = True):
     """冲突校验"""
-    if not STATE.cells:
-        raise HTTPException(400, "请先上传工参文件")
+    _require_cells_loaded()
     conflicts = collect_conflicts(STATE.cells, use_original_pci=False,
                                    directional_filter=directional_filter)
     return {
@@ -864,8 +960,7 @@ async def api_check_conflict(directional_filter: bool = True):
 @app.post("/api/check/redundancy")
 async def api_check_redundancy():
     """邻区冗余/漏配检测"""
-    if not STATE.cells:
-        raise HTTPException(400, "请先上传工参文件")
+    _require_cells_loaded()
     result = detect_redundancy(STATE.cells)
     return {
         "success": True,
@@ -876,25 +971,25 @@ async def api_check_redundancy():
 @app.post("/api/export/file")
 async def api_export_file(req: ExportRequest):
     """导出文件(工参/报表/MML)"""
-    if not STATE.cells:
-        raise HTTPException(400, "请先上传工参文件")
+    _require_cells_loaded()
+    cells_export = _merge_runtime_cells()
 
     if req.export_type == "workparams":
-        content = export_workparams(STATE.cells)
+        content = export_workparams(cells_export)
         return Response(
             content=content,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": "attachment; filename=workparams_planned.xlsx"},
         )
     elif req.export_type == "neighbors":
-        content = export_neighbors(STATE.cells)
+        content = export_neighbors(cells_export)
         return Response(
             content=content,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": "attachment; filename=neighbors_list.xlsx"},
         )
     elif req.export_type == "conflicts":
-        conflicts = collect_conflicts(STATE.cells, use_original_pci=False)
+        conflicts = collect_conflicts(cells_export, use_original_pci=False)
         content = export_conflicts(conflicts)
         return Response(
             content=content,
@@ -902,7 +997,7 @@ async def api_export_file(req: ExportRequest):
             headers={"Content-Disposition": "attachment; filename=conflicts_report.xlsx"},
         )
     elif req.export_type == "mml":
-        mml_text = export_mml(STATE.cells, vendor=req.vendor)
+        mml_text = export_mml(cells_export, vendor=req.vendor)
         ext = "txt" if req.vendor == "zte" else "txt"
         return Response(
             content=mml_text,
@@ -911,7 +1006,7 @@ async def api_export_file(req: ExportRequest):
         )
     elif req.export_type == "summary":
         conflicts = collect_conflicts(STATE.cells, use_original_pci=False)
-        content = export_plan_summary(STATE.cells, conflicts, STATE.plan_log)
+        content = export_plan_summary(cells_export, conflicts, STATE.plan_log)
         return Response(
             content=content,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -921,18 +1016,109 @@ async def api_export_file(req: ExportRequest):
         raise HTTPException(400, f"不支持的导出类型: {req.export_type}")
 
 
+@app.get("/api/cells/extent")
+async def api_cells_extent(rat: Optional[str] = Query(default=None)):
+    """工参经纬度包围盒（规划页首次定位，不拉全量）。"""
+    ext = load_cells_extent(rat=rat)
+    meta = load_meta_only()
+    base_stats = {**(STATE.plan_stats or {}), **(meta.get("stats") or {})}
+    n = count_cells()
+    return {
+        "success": True,
+        "extent": ext,
+        "stats": {**base_stats, "cells_count": n, "total": base_stats.get("total") or n},
+    }
+
+
 @app.get("/api/cells")
-async def api_cells():
-    """获取当前内存中的小区列表(供前端地图渲染)"""
-    cells_light = [
-        _cell_to_light(c) for c in filter_cells_for_map_and_plan(STATE.cells)
-    ]
-    conflicts = collect_conflicts(STATE.cells, use_original_pci=False)
-    stats = {**(STATE.plan_stats or {}), "conflict_count": len(conflicts)}
+async def api_cells(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=500),
+    keyword: Optional[str] = Query(default=None),
+    rat: Optional[str] = Query(default=None),
+    sync_filter: Optional[str] = Query(default=None, pattern="^(synced|unsynced)$"),
+    min_lat: Optional[float] = Query(default=None),
+    max_lat: Optional[float] = Query(default=None),
+    min_lon: Optional[float] = Query(default=None),
+    max_lon: Optional[float] = Query(default=None),
+    map_limit: int = Query(default=8000, ge=100, le=20000),
+    mode: str = Query(default="auto", pattern="^(auto|paged|map|full)$"),
+):
+    """
+    工参查询：默认优先从 SQLite 分页/视口加载，减轻内存与响应体积。
+    - mode=paged：工参表分页（不含 neighbors）
+    - mode=map 或带 min_lat/max_lat/min_lon/max_lon：地图视口
+    - mode=full：载入内存后返回全量（兼容旧前端，慎用大数据集）
+    """
+    meta = load_meta_only()
+    base_stats = {**(STATE.plan_stats or {}), **(meta.get("stats") or {})}
+    base_stats["cells_count"] = count_cells()
+    base_stats["total"] = base_stats.get("total") or base_stats["cells_count"]
+
+    if mode == "full":
+        _ensure_cells_loaded()
+        merged = _merge_runtime_cells()
+        cells_light = [
+            _cell_to_light(c, include_neighbors=False)
+            for c in filter_cells_for_map_and_plan(merged)
+        ]
+        conflicts = collect_conflicts(merged, use_original_pci=False)
+        stats = {**base_stats, "conflict_count": len(conflicts)}
+        return {
+            "success": True,
+            "cells": cells_light,
+            "stats": stats,
+            "truncated": False,
+        }
+
+    use_map = mode == "map" or (
+        mode == "auto"
+        and min_lat is not None
+        and max_lat is not None
+        and min_lon is not None
+        and max_lon is not None
+    )
+
+    if not use_map:
+        offset = (page - 1) * page_size
+        cells, total = load_cells_page(
+            offset,
+            page_size,
+            rat=rat,
+            keyword=keyword,
+            sync_filter=sync_filter,
+            light=True,
+        )
+        cells_light = [_cell_to_light(c, include_neighbors=False) for c in cells]
+        stats = {**base_stats, "total": total, "conflict_count": base_stats.get("conflict_count")}
+        return {
+            "success": True,
+            "cells": cells_light,
+            "stats": stats,
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "truncated": False,
+        }
+
+    cells = load_cells_for_map(
+        min_lat=min_lat,
+        max_lat=max_lat,
+        min_lon=min_lon,
+        max_lon=max_lon,
+        rat=rat,
+        limit=map_limit,
+    )
+    cells = filter_cells_for_map_and_plan(cells)
+    cells_light = [_cell_to_light(c, include_neighbors=False) for c in cells]
+    truncated = len(cells) >= map_limit
+    stats = {**base_stats, "conflict_count": base_stats.get("conflict_count")}
     return {
         "success": True,
         "cells": cells_light,
         "stats": stats,
+        "truncated": truncated,
+        "map_limit": map_limit,
     }
 
 
@@ -941,6 +1127,7 @@ async def api_cell_create(req: CellCreateRequest):
     """手工新增一条工参小区"""
     from data_parser import RAT_ALIASES
 
+    _ensure_cells_loaded()
     ecgi = (req.ecgi or "").strip()
     if not ecgi:
         raise HTTPException(400, "ECGI 不能为空")
@@ -971,13 +1158,12 @@ async def api_cell_update(ecgi: str, req: CellUpdateRequest):
     """编辑工参小区（ECGI 不可修改）"""
     from data_parser import RAT_ALIASES
 
+    _ensure_cells_loaded()
     idx = _find_cell_index(ecgi)
     if idx < 0:
         raise HTTPException(404, f"未找到小区: {ecgi}")
 
-    import copy
-
-    cell = copy.deepcopy(STATE.cells[idx])
+    cell = dict(STATE.cells[idx])
     updates = req.model_dump(exclude_unset=True)
     if "rat" in updates and updates["rat"] is not None:
         rat_raw = str(updates["rat"]).strip()
@@ -1002,6 +1188,7 @@ async def api_cell_update(ecgi: str, req: CellUpdateRequest):
 @app.delete("/api/cells/{ecgi:path}")
 async def api_cell_delete(ecgi: str):
     """删除一条工参小区"""
+    _ensure_cells_loaded()
     idx = _find_cell_index(ecgi)
     if idx < 0:
         raise HTTPException(404, f"未找到小区: {ecgi}")
@@ -1064,7 +1251,39 @@ async def api_template(rat: str = Query("both", pattern="^(4G|5G|both)$")):
 
 @app.get("/api/health")
 async def api_health():
-    return {"status": "ok", "cells_loaded": len(STATE.cells), "version": "1.2.1"}
+    return {
+        "status": "ok",
+        "cells_in_db": count_cells(),
+        "cells_in_memory": len(STATE.cells) + len(_temp_cells),
+        "memory_loaded": _cells_loaded,
+        "version": "1.2.1",
+    }
+
+
+class PlanDefaultsPatch(BaseModel):
+    """部分更新规划默认参数（写入 SQLite meta，重启后仍有效）"""
+    pci: Optional[Dict[str, Any]] = None
+    neighbor: Optional[Dict[str, Any]] = None
+    batch: Optional[Dict[str, Any]] = None
+
+
+@app.get("/api/settings/plan-defaults")
+async def api_get_plan_defaults():
+    return {"success": True, "defaults": get_plan_defaults()}
+
+
+@app.put("/api/settings/plan-defaults")
+async def api_put_plan_defaults(body: PlanDefaultsPatch):
+    try:
+        merged = save_plan_defaults(body.model_dump(exclude_none=True))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"success": True, "defaults": merged}
+
+
+@app.post("/api/settings/plan-defaults/reset")
+async def api_reset_plan_defaults():
+    return {"success": True, "defaults": reset_plan_defaults()}
 
 
 # =========================
@@ -1094,9 +1313,9 @@ class SingleSitePlanRequest(BaseModel):
     # 工程经验: 0.1 会包含几乎所有近距离候选 (造成冗余),
     #          0.5 过滤掉意义不大的邻区关系 (推荐默认),
     #          0.7+ 仅保留强相关邻区
-    score_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    score_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     # 规划模式: pci - 仅PCI规划, nbr - 仅邻区规划(需已有PCI), pci+nbr - PCI+邻区规划(默认)
-    planning_mode: str = Field(default="pci+nbr", pattern="^(pci|nbr|pci\\+nbr)$")
+    planning_mode: Optional[str] = Field(default=None, pattern="^(pci|nbr|pci\\+nbr)$")
 
 
 class ExportSplitRequest(BaseModel):
@@ -1244,10 +1463,11 @@ def _pci_quality_for_planned_ecgis(
 ) -> Dict[str, Any]:
     """单站/批量新建小区：仅对 planned_ecgis 生成质量报告（邻区参考全网 STATE）。"""
     ecgis = {e for e in planned_ecgis if e}
-    conflicts = collect_conflicts(STATE.cells, use_original_pci=False,
+    merged = _merge_runtime_cells()
+    conflicts = collect_conflicts(merged, use_original_pci=False,
                                  directional_filter=directional_filter)
     return build_pci_quality_report(
-        STATE.cells,
+        merged,
         conflicts,
         ecgi_filter=ecgis if ecgis else None,
         check_mod30=check_mod30,
@@ -1302,21 +1522,49 @@ def _serialize_planned_cells(
     return out
 
 
+def _resolve_single_site_plan_kwargs(req: SingleSitePlanRequest) -> Dict[str, Any]:
+    """请求体未传的项用「规划默认参数」页持久化配置"""
+    pci_def = pci_defaults_dict()
+    score_thr = req.score_threshold
+    if score_thr is None:
+        score_thr = single_site_default_score_threshold()
+    planning_mode = req.planning_mode or pci_def["planning_mode"]
+    return {
+        "lat": req.lat,
+        "lon": req.lon,
+        "rat": req.rat,
+        "freq_band": req.freq_band,
+        "plan_site_type": req.plan_site_type,
+        "n_sectors": req.n_sectors,
+        "base_azimuth": req.base_azimuth,
+        "name_hint": req.name_hint,
+        "site_name": req.site_name,
+        "earfcn": req.earfcn,
+        "tac": req.tac,
+        "nbr_plan_types": req.nbr_plan_types,
+        "engine": req.engine if req.engine else pci_def["engine"],
+        "reuse_distance_km": req.reuse_distance_km,
+        "check_mod6": req.check_mod6,
+        "check_mod30": req.check_mod30,
+        "use_beam_overlap_score": req.use_beam_overlap_score,
+        "score_threshold": score_thr,
+        "planning_mode": planning_mode,
+        "directional_filter": req.directional_filter,
+    }
+
+
 def _purge_planned_temp_cells(state_cells: List[Dict[str, Any]]) -> int:
     """
-    清理 STATE.cells 中所有 is_temp=True (单站规划生成的临时小区) 的小区.
-
-    - 临时小区本来就不入库 (db.save_all 过滤 is_temp=True)
-    - 但每次单站规划成功后都会 STATE.cells.extend, 多次规划累积同 site_name 的临时小区
-    - 后端 SSS 硬性校验按 site_name 分桶, 同站多次累积会导致 N_ID(1) 不一致 (报错)
-    - 前端 app.js 在调用 planSingle 时会清掉前端 this.cells 中所有 PLAN-* (see line 304),
-      后端也得同步清理, 保证 STATE 与前端一致
-
+    清理内存中的 PLAN-* 临时小区（_temp_cells；兼容旧版 STATE 内 is_temp）。
     返回被清理的临时小区数量.
     """
-    before = len(state_cells)
-    state_cells[:] = [c for c in state_cells if not c.get("is_temp", False)]
-    return before - len(state_cells)
+    before = len(_temp_cells)
+    _temp_cells.clear()
+    if state_cells is not STATE.cells:
+        return before
+    n_state = len(STATE.cells)
+    STATE.cells[:] = [c for c in STATE.cells if not c.get("is_temp", False)]
+    return before + (n_state - len(STATE.cells))
 
 
 @app.post("/api/plan/single")
@@ -1327,119 +1575,31 @@ async def api_plan_single(req: SingleSitePlanRequest):
     """
     import asyncio
 
-    # ── 清理 STATE 中已存在的 PLAN-* 临时小区 (避免同站多次累积触发 SSS 校验失败) ──
-    purged = _purge_planned_temp_cells(STATE.cells)
+    _require_cells_loaded()
+    if not try_acquire_plan_lock("plan_single"):
+        return _plan_busy_response()
+
+    _purge_planned_temp_cells(STATE.cells)
+    kw = _resolve_single_site_plan_kwargs(req)
 
     loop = asyncio.get_event_loop()
     try:
-        result = await asyncio.wait_for(
-            loop.run_in_executor(
-                _executor,
-                lambda: plan_single_site(
-                    STATE.cells,
-                    lat=req.lat,
-                    lon=req.lon,
-                    rat=req.rat,
-                    freq_band=req.freq_band,
-                    plan_site_type=req.plan_site_type,
-                    n_sectors=req.n_sectors,
-                    base_azimuth=req.base_azimuth,
-                    name_hint=req.name_hint,
-                    site_name=req.site_name,
-                    earfcn=req.earfcn,
-                    tac=req.tac,
-                    nbr_plan_types=req.nbr_plan_types,
-                    engine=req.engine,
-                    reuse_distance_km=req.reuse_distance_km,
-                    check_mod6=req.check_mod6,
-                    check_mod30=req.check_mod30,
-                    use_beam_overlap_score=req.use_beam_overlap_score,
-                    score_threshold=req.score_threshold,
-                    planning_mode=req.planning_mode,
-                    directional_filter=req.directional_filter,
-                ),
-            ),
-            timeout=60.0,
-        )
-    except asyncio.TimeoutError:
-        raise HTTPException(
-            status_code=504,
-            detail="单站规划超时（60s），请尝试减小 reuse_distance_km 或减少扇区数",
-        )
-
-    # ── 把新小区合并到 STATE.cells (带 is_temp=True, 不入库但 export 能读到) ──
-    STATE.cells.extend(result["planned_cells"])
-
-    pci_quality = _pci_quality_for_planned_ecgis(
-        result["planned_ecgis"],
-        check_mod30=req.check_mod30,
-        directional_filter=req.directional_filter,
-    )
-    q_by_ecgi = {r["ecgi"]: r for r in pci_quality.get("cells", []) if r.get("ecgi")}
-    planned = _serialize_planned_cells(result["planned_cells"], q_by_ecgi)
-
-    # 持久化 (新增 + 修改)
-    if req.persist:
         try:
-            db_save_all(STATE.cells)
-        except Exception as e:
-            result.setdefault("log", []).append(f"[warn] DB 持久化失败: {e}")
+            result = await asyncio.wait_for(
+                loop.run_in_executor(
+                    _executor,
+                    lambda: plan_single_site(_merge_runtime_cells(), **kw),
+                ),
+                timeout=60.0,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(
+                status_code=504,
+                detail="单站规划超时（60s），请尝试减小 reuse_distance_km 或减少扇区数",
+            )
 
-    return {
-        "success": True,
-        "center": result["center"],
-        "planned_cells": planned,
-        "planned_ecgis": result["planned_ecgis"],
-        "nbr_by_type": result["nbr_by_type"],
-        "nbr_counts": {k: len(v) for k, v in result["nbr_by_type"].items()},
-        "engine": result["engine"],
-        "log": result["log"][-30:],
-        "stats": {
-            "planned_count": len(planned),
-            "pci_stats": result.get("pci_stats", {}),
-            "nbr_stats": result.get("nbr_stats", {}),
-            "pci_quality_summary": pci_quality.get("summary", {}),
-        },
-        "pci_quality": pci_quality,
-    }
+        _temp_cells.extend(result["planned_cells"])
 
-
-@app.post("/api/plan/single/stream")
-async def api_plan_single_stream(req: SingleSitePlanRequest):
-    """
-    单站规划 (SSE 流式):
-    - 推送 progress 事件 (pct, stage)
-    - 最后推送 result 事件 (与 /api/plan/single 同 schema)
-    """
-    # ── 清理 STATE 中已存在的 PLAN-* 临时小区 (避免同站多次累积触发 SSS 校验失败) ──
-    _purge_planned_temp_cells(STATE.cells)
-
-    def _run(progress_cb):
-        result = plan_single_site(
-            STATE.cells,
-            lat=req.lat,
-            lon=req.lon,
-            rat=req.rat,
-            freq_band=req.freq_band,
-            plan_site_type=req.plan_site_type,
-            n_sectors=req.n_sectors,
-            base_azimuth=req.base_azimuth,
-            name_hint=req.name_hint,
-            site_name=req.site_name,
-            earfcn=req.earfcn,
-            tac=req.tac,
-            nbr_plan_types=req.nbr_plan_types,
-            engine=req.engine,
-            reuse_distance_km=req.reuse_distance_km,
-            check_mod6=req.check_mod6,
-            check_mod30=req.check_mod30,
-            use_beam_overlap_score=req.use_beam_overlap_score,
-            score_threshold=req.score_threshold,
-            planning_mode=req.planning_mode,
-            progress_cb=progress_cb,
-            directional_filter=req.directional_filter,
-        )
-        STATE.cells.extend(result["planned_cells"])
         pci_quality = _pci_quality_for_planned_ecgis(
             result["planned_ecgis"],
             check_mod30=req.check_mod30,
@@ -1447,12 +1607,14 @@ async def api_plan_single_stream(req: SingleSitePlanRequest):
         )
         q_by_ecgi = {r["ecgi"]: r for r in pci_quality.get("cells", []) if r.get("ecgi")}
         planned = _serialize_planned_cells(result["planned_cells"], q_by_ecgi)
+
         if req.persist:
             try:
                 db_save_all(STATE.cells)
             except Exception as e:
                 result.setdefault("log", []).append(f"[warn] DB 持久化失败: {e}")
-        return {
+
+        resp = {
             "success": True,
             "center": result["center"],
             "planned_cells": planned,
@@ -1469,6 +1631,62 @@ async def api_plan_single_stream(req: SingleSitePlanRequest):
             },
             "pci_quality": pci_quality,
         }
+        release_planning_temp(trim_log=STATE.plan_log)
+        return resp
+    finally:
+        release_plan_lock()
+
+
+@app.post("/api/plan/single/stream")
+async def api_plan_single_stream(req: SingleSitePlanRequest):
+    """
+    单站规划 (SSE 流式):
+    - 推送 progress 事件 (pct, stage)
+    - 最后推送 result 事件 (与 /api/plan/single 同 schema)
+    """
+    _require_cells_loaded()
+    if not try_acquire_plan_lock("plan_single_stream"):
+        return _plan_busy_response()
+    _purge_planned_temp_cells(STATE.cells)
+
+    def _run(progress_cb):
+        try:
+            kw = _resolve_single_site_plan_kwargs(req)
+            kw["progress_cb"] = progress_cb
+            result = plan_single_site(_merge_runtime_cells(), **kw)
+            _temp_cells.extend(result["planned_cells"])
+            pci_quality = _pci_quality_for_planned_ecgis(
+                result["planned_ecgis"],
+                check_mod30=req.check_mod30,
+                directional_filter=req.directional_filter,
+            )
+            q_by_ecgi = {r["ecgi"]: r for r in pci_quality.get("cells", []) if r.get("ecgi")}
+            planned = _serialize_planned_cells(result["planned_cells"], q_by_ecgi)
+            if req.persist:
+                try:
+                    db_save_all(STATE.cells)
+                except Exception as e:
+                    result.setdefault("log", []).append(f"[warn] DB 持久化失败: {e}")
+            release_planning_temp(trim_log=STATE.plan_log)
+            return {
+                "success": True,
+                "center": result["center"],
+                "planned_cells": planned,
+                "planned_ecgis": result["planned_ecgis"],
+                "nbr_by_type": result["nbr_by_type"],
+                "nbr_counts": {k: len(v) for k, v in result["nbr_by_type"].items()},
+                "engine": result["engine"],
+                "log": result["log"][-30:],
+                "stats": {
+                    "planned_count": len(planned),
+                    "pci_stats": result.get("pci_stats", {}),
+                    "nbr_stats": result.get("nbr_stats", {}),
+                    "pci_quality_summary": pci_quality.get("summary", {}),
+                },
+                "pci_quality": pci_quality,
+            }
+        finally:
+            release_plan_lock()
 
     return _sse_stream_progress(_run, timeout=120.0)
 
@@ -1490,6 +1708,10 @@ async def api_plan_batch(
     批量规划: 解析 xlsx + 局部规划 + 直接返回多 sheet xlsx
     """
     import asyncio
+
+    _require_cells_loaded()
+    if not try_acquire_plan_lock("plan_batch"):
+        return _plan_busy_response()
     content = await file.read()
     npt_list = [s.strip() for s in nbr_plan_types.split(",") if s.strip()]
 
@@ -1522,6 +1744,10 @@ async def api_plan_batch(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"批量规划失败: {e}")
+    finally:
+        release_plan_lock()
+        del content
+        gc.collect()
 
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "批量规划失败"))
@@ -2000,10 +2226,10 @@ async def api_config_upload_stream(
             # 自定义解析: 不使用 parse_config_excel 一次性解析，改为逐 sheet 解析
             # 这样可以发出 sheet 粒度的进度
             from config_imports import get_sheet_columns, is_sheet_enabled
-            from config_parser import parse_single_sheet, apply_sheet_unique_keys
+            from config_parser import parse_single_sheet, apply_sheet_unique_keys, load_workbook_safe
 
             try:
-                wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+                wb = load_workbook_safe(content, data_only=True)
             except Exception as e:
                 raise RuntimeError(f"Excel文件读取失败: {e}")
 
@@ -2295,7 +2521,8 @@ async def api_config_parse_excel(file: UploadFile = File(...)):
 
         # 仅解析 sheet 元数据（不读任何行）
         # keep_links=False 减少内存；data_only=True 取缓存值
-        wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True, keep_links=False)
+        from config_parser import load_workbook_safe
+        wb = load_workbook_safe(content, data_only=True, keep_links=False)
         sheets = []
 
         # 大文件阈值：>50MB 跳过行数统计（仅返回列名）
@@ -2564,6 +2791,13 @@ if config.frontend_dir.exists():
     @app.get("/workparams", response_class=HTMLResponse)
     async def workparams_page():
         idx = config.frontend_dir / "workparams.html"
+        if idx.exists():
+            return HTMLResponse(idx.read_text(encoding="utf-8"))
+        return HTMLResponse("<h1>页面不存在</h1>")
+
+    @app.get("/settings", response_class=HTMLResponse)
+    async def settings_page():
+        idx = config.frontend_dir / "settings.html"
         if idx.exists():
             return HTMLResponse(idx.read_text(encoding="utf-8"))
         return HTMLResponse("<h1>页面不存在</h1>")

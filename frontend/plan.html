@@ -1289,10 +1289,10 @@
         <span class="map-plan-trigger-icon">&#x1F4CB;</span>
         <span class="map-plan-trigger-label">批量规划</span>
       </button>
-      <button class="map-plan-trigger" id="trigger-nbr" onclick="toggleFloatCard('nbr')">
-        <span class="map-plan-trigger-icon">&#x1F517;</span>
-        <span class="map-plan-trigger-label">邻区参数</span>
-      </button>
+      <a class="map-plan-trigger" href="/settings" style="text-decoration:none;" title="规划默认参数（持久化）">
+        <span class="map-plan-trigger-icon">&#x2699;</span>
+        <span class="map-plan-trigger-label">默认参数</span>
+      </a>
       <div style="width:1px;height:20px;background:var(--border-color);flex-shrink:0;"></div>
       <button class="map-plan-trigger" id="btn-reset-view" style="padding:8px 10px;" title="重置视图">
         <span class="map-plan-trigger-icon">&#x1F3E0;</span>
@@ -1379,8 +1379,9 @@
           </div>
           <div class="form-row">
             <label>得分阈值</label>
-            <input id="ss-score-threshold" type="number" min="0" max="1" step="0.05" value="0.5" style="max-width:80px;" />
+            <input id="ss-score-threshold" type="number" min="0" max="1" step="0.05" placeholder="默认" style="max-width:80px;" title="留空则使用「默认参数」页中的单站邻区得分阈值" />
           </div>
+          <p style="grid-column:1/-1;font-size:10px;color:var(--text-tertiary);margin:0;">PCI/邻区算法默认值请在 <a href="/settings" style="color:var(--accent-blue);">默认参数</a> 中配置（重启后仍有效）</p>
         </div>
         <div class="float-plan-actions">
           <button class="btn btn-primary" id="btn-plan-single">规划</button>
@@ -1428,41 +1429,15 @@
       <div class="float-card-resize" data-resize="batch"></div>
     </div>
 
-    <!-- 邻区参数浮动卡片 -->
-    <div class="float-plan-card" id="float-card-nbr" style="top:50px;left:860px;width:340px;height:auto;">
-      <div class="float-plan-card-header" data-drag="nbr">
-        <span class="float-card-icon">&#x1F517;</span>
-        <span class="float-card-title">邻区参数</span>
-        <button class="float-card-btn close-btn" onclick="closeFloatCard('nbr')" title="关闭">&#x2715;</button>
-      </div>
-      <div class="float-plan-card-body">
-        <div class="float-plan-fields">
-          <div class="form-row">
-            <label>最大邻区数</label>
-            <input type="number" id="max-neighbors" value="16" min="1" max="64" />
-          </div>
-          <div class="form-row">
-            <label>最大距离(km)</label>
-            <input type="number" id="max-distance" value="5.0" step="0.5" min="0.1" />
-          </div>
-          <div class="form-row">
-            <label>距离权重</label>
-            <input type="number" id="weight-distance" value="0.7" step="0.05" min="0" max="1" />
-          </div>
-          <div class="form-row">
-            <label>交叠权重</label>
-            <input type="number" id="weight-overlap" value="0.3" step="0.05" min="0" max="1" />
-          </div>
-          <div class="form-row">
-            <label>得分阈值</label>
-            <input type="number" id="score-threshold" value="0.10" step="0.05" min="0" max="1" />
-          </div>
-          <div class="form-row" style="grid-column:1/-1;">
-            <label><input type="checkbox" id="enable-cross-system" checked /> 异系统邻区</label>
-          </div>
-        </div>
-      </div>
-      <div class="float-card-resize" data-resize="nbr"></div>
+    <!-- 规划页共用 PCI 参数（由默认参数页加载后写入，无独立邻区浮动卡片） -->
+    <div id="plan-hidden-defaults" style="display:none" aria-hidden="true">
+      <input type="radio" name="pci-engine" value="legacy" id="pci-engine-legacy" checked />
+      <input type="radio" name="pci-engine" value="rftools" id="pci-engine-rftools" />
+      <input type="checkbox" id="check-mod6" />
+      <input type="checkbox" id="check-mod30" checked />
+      <input type="checkbox" id="directional-filter" checked />
+      <input type="checkbox" id="use-beam-overlap" />
+      <input id="reuse-distance" type="number" value="5" step="0.5" min="0.1" />
     </div>
 
     <div id="map-wrap">

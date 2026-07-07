@@ -25,10 +25,30 @@ from site_type_ext import (
     get_pci_distance_thresholds,
     to_plan_site_type,
 )
+from app_settings import batch_default_nbr_score_threshold, neighbor_kwargs_from_defaults
 
 
 # 批量上限
 BATCH_MAX_ROWS = 500
+
+
+def _build_per_src_nbr_threshold(
+    batch_cells: List[Dict[str, Any]],
+) -> Tuple[Dict[str, float], float]:
+    """从模板「邻区得分阈值」列构建 per-src 映射；留空行用系统默认（设置页持久化）。"""
+    default_thr = batch_default_nbr_score_threshold()
+    per: Dict[str, float] = {}
+    for c in batch_cells:
+        ecgi = c.get("ecgi")
+        if not ecgi:
+            continue
+        raw = c.get("nbr_score_threshold")
+        if raw is not None and str(raw).strip() != "":
+            try:
+                per[str(ecgi)] = float(raw)
+            except (TypeError, ValueError):
+                pass
+    return per, default_thr
 
 
 def expand_site_to_cells(
@@ -705,16 +725,17 @@ def _run_neighbor_planning(
             progress_cb(70, "邻区规划中…")
         except Exception:
             pass
-    res = plan_neighbors(
-        cells,
-        nbr_plan_types=nbr_plan_types,
-        use_beam_overlap_score=use_beam_overlap_score,
-        target_ecgis=target_ecgis,
-        max_distance_km=max_distance_km,
-        score_threshold=score_threshold,
-        first_ring_km=first_ring_km,
-        per_src_score_threshold=per_src_score_threshold,
-    )
+    nbr_kw = neighbor_kwargs_from_defaults()
+    nbr_kw.update({
+        "nbr_plan_types": nbr_plan_types,
+        "use_beam_overlap_score": use_beam_overlap_score,
+        "target_ecgis": target_ecgis,
+        "max_distance_km": max_distance_km,
+        "score_threshold": score_threshold,
+        "first_ring_km": first_ring_km,
+        "per_src_score_threshold": per_src_score_threshold,
+    })
+    res = plan_neighbors(cells, **nbr_kw)
     if progress_cb:
         try:
             progress_cb(95, "邻区规划完成")
@@ -987,6 +1008,15 @@ def plan_batch_sites(
 
     # ── 局部邻区规划: 仅对新增小区做邻区规划 ──
     if planning_mode in ("nbr", "pci+nbr"):
+        per_src_thr, default_nbr_thr = _build_per_src_nbr_threshold(batch_cells)
+        if per_src_thr:
+            log.append(
+                f"[批量规划] 邻区得分阈值: 默认 {default_nbr_thr}，"
+                f"按行覆盖 {len(per_src_thr)} 个小区 "
+                f"(示例 {next(iter(per_src_thr.items()))})"
+            )
+        else:
+            log.append(f"[批量规划] 邻区得分阈值: 默认 {default_nbr_thr}（模板未填）")
         log.append(f"[批量规划] 局部邻区规划 (reuse={reuse_distance_km}km) ...")
         nbr_result = _run_neighbor_planning(
             work_cells,
@@ -994,6 +1024,8 @@ def plan_batch_sites(
             use_beam_overlap_score=use_beam_overlap_score,
             target_ecgis=all_planned_ecgis,
             max_distance_km=reuse_distance_km,
+            score_threshold=default_nbr_thr,
+            per_src_score_threshold=per_src_thr or None,
             progress_cb=progress_cb,
         )
         log.extend(nbr_result.get("log", []))

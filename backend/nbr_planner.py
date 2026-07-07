@@ -322,7 +322,22 @@ def plan_neighbors(
     for src_ecgi, lst in by_src.items():
         # 同频优先, 然后按得分降序
         lst.sort(key=lambda x: ((0 if x["same_freq"] else 1), -x["score"]))
-        top = lst[:max_neighbors]
+
+        # 分频段独立限制: 每个频段独立取 top max_neighbors_per_freq,
+        # 避免某频段(如700M同频)数量过多挤占其他频段(如2.6G异频)的邻区配额
+        max_neighbors_per_freq = max(max_neighbors, 480)
+        by_freq: Dict[Optional[str], List[Dict[str, Any]]] = {}
+        for item in lst:
+            freq_key = _freq_band_key(item["dst"])
+            by_freq.setdefault(freq_key, []).append(item)
+
+        top: List[Dict[str, Any]] = []
+        for freq_lst in by_freq.values():
+            top.extend(freq_lst[:max_neighbors_per_freq])
+
+        # 合并后仍按同频优先 + 得分降序
+        top.sort(key=lambda x: ((0 if x["same_freq"] else 1), -x["score"]))
+
         for item in top:
             neighbors_map[src_ecgi].append({
                 "dst_ecgi": item["dst"]["ecgi"],

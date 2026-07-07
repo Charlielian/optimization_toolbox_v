@@ -129,8 +129,20 @@ const API = {
     return { blob, filename };
   },
 
-  async getCells() {
-    const res = await fetch(this.base + '/api/cells');
+  async getCellsExtent(rat = null) {
+    const q = rat ? `?rat=${encodeURIComponent(rat)}` : '';
+    const res = await fetch(this.base + '/api/cells/extent' + q);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async getCells(params = {}) {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '') q.set(k, String(v));
+    });
+    const qs = q.toString();
+    const res = await fetch(this.base + '/api/cells' + (qs ? `?${qs}` : ''));
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
@@ -456,6 +468,37 @@ const API = {
     const res = await fetch(this.base + '/api/config/parse-excel', {
       method: 'POST',
       body: formData,
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async getPlanDefaults() {
+    const res = await fetch(this.base + '/api/settings/plan-defaults');
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async savePlanDefaults(body) {
+    const res = await fetch(this.base + '/api/settings/plan-defaults', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      let msg = await res.text();
+      try {
+        const j = JSON.parse(msg);
+        msg = j.detail || msg;
+      } catch (e) { /* ignore */ }
+      throw new Error(msg);
+    }
+    return res.json();
+  },
+
+  async resetPlanDefaults() {
+    const res = await fetch(this.base + '/api/settings/plan-defaults/reset', {
+      method: 'POST',
     });
     if (!res.ok) throw new Error(await res.text());
     return res.json();
