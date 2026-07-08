@@ -1963,8 +1963,9 @@ async def api_export_split(req: ExportSplitRequest):
     导出规划结果 (多 sheet xlsx): PCI规划表 + 邻区-<类型>
     """
     try:
+        cells_export = _merge_runtime_cells()
         xlsx_blob = export_plan_split_sheets(
-            STATE.cells, req.planned_ecgis, nbr_plan_types=req.nbr_plan_types
+            cells_export, req.planned_ecgis, nbr_plan_types=req.nbr_plan_types
         )
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         ascii_name = f"plan_split_{ts}.xlsx"
